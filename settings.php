@@ -444,4 +444,32 @@ urn:mace:dir:attribute-def:mail *</pre>"]),
             ',',
             PARAM_TEXT,
             5));
+
+    // Moodle as an IDP feature setting section.
+    $settings->add(new admin_setting_heading('auth_saml2/moodleidpheading', get_string('moodleidpheading', 'auth_saml2'),
+        new lang_string('moodleidpdescription', 'auth_saml2')));
+
+    // Enable Moodle IDP.
+    $settings->add(new admin_setting_configselect(
+        'auth_saml2/moodleidpenabled',
+        get_string('moodleidpenabled', 'auth_saml2'),
+        get_string('moodleidpenabled_help', 'auth_saml2'),
+        0, $yesno));
+
+        // IDP Metadata.
+    $settings->add(new setting_textonly(
+        'auth_saml2/moodleidpmetadata',
+        get_string('moodleidpmetadata', 'auth_saml2'),
+        get_string('moodleidpmetadata_help', 'auth_saml2', $CFG->wwwroot . '/auth/saml2/idp/metadata.php')
+        ));
+
+    // List valid SPs.
+    $settings->add(new admin_setting_configtextarea(
+        'auth_saml2/moodleidpsplist',
+        get_string('moodleidpsplist', 'auth_saml2'),
+        get_string('moodleidpsplist_help', 'auth_saml2', ['example' => "<pre>
+https://www.someothermoodle.com/auth/saml2/sp/metadata.php
+</pre>"]),
+        '',
+        PARAM_TEXT));
 }
