@@ -71,6 +71,7 @@ Features not yet implemented:
 | Moodle 4.5        | `MOODLE_405_STABLE`| 8.1+      | v2.3.5        |
 | Moodle 4.4        | `MOODLE_404_STABLE`| 8.1+      | v2.3.5        |
 | Moodle 3.9 to 4.3 | `MOODLE_39_STABLE` | 7.4+      | v2.0.5        |
+| Totara 19+        | `TOTARA_19` | 7.4+      | v2.0.5        |
 | Totara 13+        | `TOTARA_13_STABLE` | 7.4+      | v2.0.5        |
 
 ## Installation
