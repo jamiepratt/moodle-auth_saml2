@@ -46,6 +46,7 @@ final class metadata_refresh_test extends \advanced_testcase {
      */
     protected function tearDown(): void {
         $this->prophet = null;  // Required for Totara 12+ support (see issue #578).
+        parent::tearDown();
     }
 
     public function test_metadata_refresh_disabled(): void {

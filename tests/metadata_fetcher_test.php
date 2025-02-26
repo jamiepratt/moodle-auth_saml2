@@ -43,6 +43,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
      */
     protected function tearDown(): void {
         $this->prophet = null; // Required for Totara 12+ support (see issue #578).
+        parent::tearDown();
     }
 
     public function test_fetch_metadata_404(): void {
