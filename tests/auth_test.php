@@ -803,7 +803,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array of testcases
      */
-    public function provider_should_login_redirect(): array {
+    public static function provider_should_login_redirect(): array {
         $midp = (new \moodle_url('/auth/saml2/selectidp.php'))->out();
         return [
             // Login normal, dual login on.
@@ -1019,7 +1019,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array
      */
-    public function provider_check_whitelisted_ip_redirect(): array {
+    public static function provider_check_whitelisted_ip_redirect(): array {
         return [
             'saml off, no ip, no redirect'              => ['off', '1.2.3.4', '', false],
             'saml not specified, junk, no redirect'     => [null, '1.2.3.4', 'qwer1234!@#qwer', false],
@@ -1034,7 +1034,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array
      */
-    public function provider_is_access_allowed(): array {
+    public static function provider_is_access_allowed(): array {
         return [
             '' => [[
                 ['uid' => 'test'], // User don't have groups attribute.
@@ -1258,7 +1258,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array of testcases
      */
-    public function provider_update_custom_user_profile_fields(): array {
+    public static function provider_update_custom_user_profile_fields(): array {
         return [
             [['testfield' => ['Test data']]],
             [['secondfield' => ['A different string']]],
@@ -1305,7 +1305,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array of testcases
      */
-    public function provider_missing_user_custom_profile_fields(): array {
+    public static function provider_missing_user_custom_profile_fields(): array {
         return [
             [['missingfield' => ['Test data']]],
             [['secondfield' => ['A different string']]],
@@ -1344,7 +1344,7 @@ final class auth_test extends \advanced_testcase {
      *
      * @return array of testcases
      */
-    public function provider_invalid_map_user_profile_fields(): array {
+    public static function provider_invalid_map_user_profile_fields(): array {
         return [
             [
                 ['field' => 'userame', 'mapping' => 'invalid'],
