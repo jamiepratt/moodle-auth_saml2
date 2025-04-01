@@ -8,6 +8,13 @@
     <licenseversion></licenseversion>
   </library>
   <library>
+    <location>vendor</location>
+    <name>Composer</name>
+    <version></version>
+    <license></license>
+    <licenseversion></licenseversion>
+  </library>
+  <library>
     <location>vendor/cweagans/composer-patches</location>
     <name>Composer Patches</name>
     <version>1.7.3</version>
