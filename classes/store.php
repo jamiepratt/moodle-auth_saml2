@@ -27,7 +27,7 @@ namespace auth_saml2;
 /**
  * A moodle DB datastore
  *
- * This is essentially a clone of /.extlib/simplesamlphp/lib/SimpleSAML/Store/SQL.php
+ * This is essentially a clone of simplesamlphp/lib/SimpleSAML/Store/SQL.php
  * but with the SQL rewritten to use the moodle api $DB->blah() instead of PDO;
  *
  * @copyright  2016 Brendan Heywood <brendan@catalyst-au.net>
