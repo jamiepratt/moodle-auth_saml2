@@ -25,7 +25,6 @@ namespace auth_saml2;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class metadata_fetcher_test extends \advanced_testcase {
-
     /** @var \Prophecy\Prophet */
     protected $prophet;
 
@@ -33,6 +32,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
      * Set up
      */
     public function setUp(): void {
+        parent::setUp();
         if (class_exists('\\Prophecy\\Prophet')) {
             $this->prophet = new \Prophecy\Prophet();
         }
