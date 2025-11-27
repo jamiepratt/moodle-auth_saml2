@@ -613,6 +613,7 @@ class auth extends \auth_plugin_base {
 
         // We store the IdP in the session to generate the config/config.php array with the default local SP.
         $idpalias = optional_param('idpalias', '', PARAM_TEXT);
+        $idp = optional_param('idp', '', PARAM_TEXT);
         if (!empty($idpalias)) {
             $idpfound = false;
 
@@ -627,8 +628,11 @@ class auth extends \auth_plugin_base {
             if (!$idpfound) {
                 $this->error_page(get_string('noidpfound', 'auth_saml2', $idpalias));
             }
-        } else if (isset($_GET['idp'])) {
-            $SESSION->saml2idp = $_GET['idp'];
+        } else if (!empty($idp)) {
+            if (array_key_exists($idp, $this->metadataentities)) {
+                $idpentity = $this->metadataentities[$idp];
+                $SESSION->saml2idp = $idpentity->md5entityid;
+            }
         } else if (!is_null($this->defaultidp)) {
             $SESSION->saml2idp = $this->defaultidp->md5entityid;
         } else if ($this->multiidp) {
