@@ -14,19 +14,30 @@
 // You should have received a copy of the GNU General Public License
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
+namespace auth_saml2;
+
+use core\plugin_manager;
+
 /**
- * Version information
+ * Moodle compatibility metadata tests.
  *
  * @package    auth_saml2
- * @copyright  Brendan Heywood <brendan@catalyst-au.net>
+ * @copyright  2026 Shipmate
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ * @coversNothing
  */
+final class compatibility_test extends \advanced_testcase {
+    /**
+     * The maintained branch explicitly supports Moodle 5.2.
+     */
+    public function test_moodle_502_is_explicitly_supported(): void {
+        $plugin = plugin_manager::instance()->get_plugin_info('auth_saml2');
 
-defined('MOODLE_INTERNAL') || die();
-
-$plugin->version   = 2026081800;    // The current plugin version (Date: YYYYMMDDXX).
-$plugin->release   = 2026081800;    // Match release exactly to version.
-$plugin->requires  = 2026042000;    // Requires Moodle 5.2.
-$plugin->component = 'auth_saml2';  // Full name of the plugin (used for diagnostics).
-$plugin->maturity  = MATURITY_STABLE;
-$plugin->supported = [502, 502];    // A range of branch numbers of supported Moodle versions.
+        $this->assertNotNull($plugin);
+        $this->assertSame([502, 502], $plugin->pluginsupported);
+        $this->assertSame(
+            plugin_manager::VERSION_SUPPORTED,
+            plugin_manager::instance()->check_explicitly_supported($plugin, 502),
+        );
+    }
+}

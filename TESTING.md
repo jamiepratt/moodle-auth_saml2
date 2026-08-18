@@ -1,5 +1,21 @@
-There are a variety of scenarions which are somewhat difficult to
-test. In future these may be automated:
+# Testing
+
+The automated PHPUnit and Behat suites use synthetic fixtures committed under
+`tests/fixtures`. The mock IdP is served from the disposable Moodle test site.
+Automated tests must not contact a production or uncontrolled IdP and must not
+contain production credentials, certificates, metadata, or user data.
+
+Run the plugin suite from a moodle-plugin-ci installation configured for the
+Moodle `v5.2.2` tag:
+
+```sh
+moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky --fail-on-incomplete --fail-on-skipped
+moodle-plugin-ci behat --profile chrome --scss-deprecations
+moodle-plugin-ci behat --profile firefox --scss-deprecations
+```
+
+The following local manual exercises are useful when developing the synthetic
+IdP fixture. They are not CI dependencies:
 
 1) Test using 1 IdP (SSP) with dual off eg:
 
@@ -7,8 +23,6 @@ http://moodle.local/login/index.php
 
 
 2) Test using mulitple IdP (SSP) with a choice of IdP eg:
-
-https://samltest.id/start-sp-test/
 
 http://moodle.local/auth/saml2/login.php?wants&idp=c4b9265e38e3107bee1ccdf9d6475676&passive=off
 
@@ -30,4 +44,3 @@ http://idp.local/simplesaml/saml2/idp/SSOService.php?spentityid=http://moodle.lo
 6) Test IdP init login when the IdP is NOT the default IdP
 
 http://idp.local/simplesaml/saml2/idp/SSOService.php?spentityid=http://moodle.local/auth/saml2/sp/metadata.php
-

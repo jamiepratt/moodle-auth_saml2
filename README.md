@@ -1,4 +1,11 @@
-[![ci](https://github.com/catalyst/moodle-auth_saml2/actions/workflows/ci.yml/badge.svg?branch=MOODLE_500_STABLE)](https://github.com/catalyst/moodle-auth_saml2/actions/workflows/ci.yml?branch=MOODLE_500_STABLE)
+[![ci](https://github.com/kbanning/moodle-auth_saml2/actions/workflows/ci.yml/badge.svg?branch=MOODLE_502_STABLE)](https://github.com/kbanning/moodle-auth_saml2/actions/workflows/ci.yml?branch=MOODLE_502_STABLE)
+
+> [!IMPORTANT]
+> This is Shipmate's Moodle 5.2 maintenance fork of
+> [Catalyst's auth_saml2 plugin](https://github.com/catalyst/moodle-auth_saml2).
+> Catalyst does not maintain Shipmate's changes. The fork started from Catalyst
+> commit `de0f1505c1470823e7f286586d88ee1f28c364bf`; original history,
+> copyright, licensing, and attribution are retained.
 
 https://moodle.org/plugins/auth_saml2
 
@@ -68,6 +75,7 @@ Features not yet implemented:
 
 | Moodle version    | Branch             | PHP       | SimpleSAMLphp |
 | ----------------- | ------------------ |-----------|---------------|
+| Moodle 5.2        | `MOODLE_502_STABLE`| 8.3       | v2.4.5        |
 | Moodle 5.0        | `MOODLE_500_STABLE`| 8.2+      | v2.3.7        |
 | Moodle 4.5        | `MOODLE_405_STABLE`| 8.1+      | v2.3.7        |
 | Moodle 4.4        | `MOODLE_404_STABLE`| 8.1+      | v2.3.5        |
@@ -82,7 +90,7 @@ Features not yet implemented:
 git to clone it into your source:
 
    ```sh
-   git clone git@github.com:catalyst/moodle-auth_saml2.git auth/saml2
+   git clone --branch MOODLE_502_STABLE git@github.com:kbanning/moodle-auth_saml2.git auth/saml2
    ```
 
 2. Then run the Moodle upgrade
@@ -117,6 +125,12 @@ $CFG->auth_saml2_redis_server = ''; # Required for the redis_store above
 
 
 ## Testing
+
+Shipmate CI runs the plugin-owned PHPUnit suite and deterministic Behat suite
+against Moodle 5.2.2. Automated SAML flows use the synthetic local IdP under
+`tests/fixtures/mockidp`; CI must not use production credentials, certificates,
+metadata, user data, or uncontrolled IdP endpoints. See [TESTING.md](TESTING.md)
+for local commands and fixture boundaries.
 
 This plugin has been tested against:
 

@@ -1,12 +1,123 @@
-# .github/workflows/ci.yml
-name: ci
+name: Moodle Plugin CI
 
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DB: pgsql
+  MOODLE_BRANCH: v5.2.2
 
 jobs:
-  test:
-    uses: catalyst/catalyst-moodle-workflows/.github/workflows/ci.yml@main
-    secrets:
-      moodle_org_token: ${{ secrets.MOODLE_ORG_TOKEN }}
-    with:
-      min_php: '7.4'
+  quality-and-phpunit:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 3
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v6
+        with:
+          path: plugin
+          persist-credentials: false
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          ini-values: max_input_vars=5000, opcache.enable_cli=1
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin && pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin && pwd)" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+      - name: Install Moodle 5.2.2 test site
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+      - name: PHP lint
+        run: moodle-plugin-ci phplint
+      - name: Moodle coding standards
+        run: moodle-plugin-ci phpcs --max-warnings 0
+      - name: PHPDoc
+        run: moodle-plugin-ci phpdoc --max-warnings 0
+      - name: Plugin metadata
+        run: moodle-plugin-ci validate
+      - name: Upgrade savepoints
+        run: moodle-plugin-ci savepoints
+      - name: PHPUnit
+        run: >-
+          moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky
+          --fail-on-incomplete --fail-on-skipped
+
+  behat:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - browser: chrome
+            selenium: selenium/standalone-chrome:latest
+          - browser: firefox
+            selenium: selenium/standalone-firefox:latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 3
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v6
+        with:
+          path: plugin
+          persist-credentials: false
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          ini-values: max_input_vars=5000, opcache.enable_cli=1
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
+          echo "$(cd ci/bin && pwd)" >> "$GITHUB_PATH"
+          echo "$(cd ci/vendor/bin && pwd)" >> "$GITHUB_PATH"
+          sudo locale-gen en_AU.UTF-8
+      - name: Install Moodle 5.2.2 test site
+        run: moodle-plugin-ci install --plugin ./plugin --db-host=127.0.0.1
+      - name: Run Behat in ${{ matrix.browser }}
+        id: behat
+        env:
+          MOODLE_BEHAT_SELENIUM_IMAGE: ${{ matrix.selenium }}
+        run: moodle-plugin-ci behat --profile "${{ matrix.browser }}" --scss-deprecations
+      - name: Collect safe Behat screenshots
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        run: |
+          mkdir -p behat-screenshots
+          find "$GITHUB_WORKSPACE/moodledata/behat_dump" -type f -name '*.png' \
+            -exec cp {} behat-screenshots/ \; 2>/dev/null || true
+      - name: Upload Behat screenshots
+        if: ${{ failure() && steps.behat.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: behat-screenshots-${{ matrix.browser }}
+          path: behat-screenshots
+          retention-days: 7
+          if-no-files-found: ignore

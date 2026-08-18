@@ -1,5 +1,5 @@
 {
-    "name": "catalyst/moodle-aith_saml2",
+    "name": "kbanning/moodle-auth_saml2",
     "description": "SAML done 100% in Moodle, fast, simple, secure",
     "type": "library",
     "config": {
@@ -10,7 +10,7 @@
             "cweagans/composer-patches": true
         },
         "platform": {
-            "php": "8.1"
+            "php": "8.3"
         },
         "audit": {
             "ignore": {
