@@ -24,6 +24,7 @@ namespace auth_saml2;
  * @copyright  Catalyst IT
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(group_rule::class)]
 final class group_rule_test extends \advanced_testcase {
     /**
      * Test we can get list of rules from config string.

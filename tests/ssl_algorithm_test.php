@@ -24,6 +24,7 @@ namespace auth_saml2;
  * @copyright  Catalyst IT
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(ssl_algorithms::class)]
 final class ssl_algorithm_test extends \basic_testcase {
     public function test_default_saml_signature_algorithm_is_valid_saml_signature_algorithm(): void {
         $this->assertTrue(array_key_exists(

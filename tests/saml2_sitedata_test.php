@@ -28,6 +28,8 @@ require_once(__DIR__ . '/../vendor/autoload.php');
  * @copyright   2018 Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(auth::class)]
+#[\PHPUnit\Framework\Attributes\CoversClass(event\cert_regenerated::class)]
 final class saml2_sitedata_test extends \advanced_testcase {
     public function test_it_creates_the_directory_if_it_does_not_exist(): void {
         global $CFG;

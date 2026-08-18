@@ -27,6 +27,7 @@ use auth_saml2\task\metadata_refresh;
  * @copyright  Copyright (c) 2017 Blackboard Inc. (http://www.blackboard.com)
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(metadata_refresh::class)]
 final class metadata_refresh_test extends \advanced_testcase {
     /**
      * Set up

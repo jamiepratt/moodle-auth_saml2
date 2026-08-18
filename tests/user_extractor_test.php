@@ -24,6 +24,7 @@ namespace auth_saml2;
  * @copyright  2021 Catalyst IT
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(user_extractor::class)]
 final class user_extractor_test extends \advanced_testcase {
     /**
      * A helper function to create a custom profile field.

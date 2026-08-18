@@ -28,6 +28,7 @@ require_once(__DIR__ . '/../vendor/autoload.php');
  * @copyright  Copyright (c) 2017 Blackboard Inc. (http://www.blackboard.com)
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(redis_store::class)]
 final class redis_store_test extends \advanced_testcase {
     /**
      * @var null|\Redis

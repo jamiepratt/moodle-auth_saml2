@@ -28,6 +28,8 @@ require_once(__DIR__ . '/../locallib.php');
  * @copyright  Brendan Heywood <brendan@catalyst-au.net>
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversFunction('auth_saml2_get_sp_metadata')]
+#[\PHPUnit\Framework\Attributes\CoversFunction('create_certificates')]
 final class locallib_test extends \advanced_testcase {
     /**
      * Regression test for Issue 132.

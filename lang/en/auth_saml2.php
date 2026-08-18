@@ -190,17 +190,29 @@ $string['phone1'] = 'Phone';
 $string['phone2'] = 'Mobile phone';
 $string['plugindisabled'] = 'SAML2 authentication plugin is disabled';
 $string['pluginname'] = 'SAML2';
+$string['privacy:no_data_reason'] = 'The Saml2 authentication plugin does not store any personal data.';
 $string['privatekeypass'] = 'Private certificate key password';
 $string['privatekeypass_help'] = 'This is used for signing the local Moodle certificate, changing this will invalidate the current certificate.';
 $string['regenerate_submit'] = 'Regenerate';
+$string['regenerateheader'] = 'Regenerate Private Key and Certificate';
 $string['regenerateheading'] = 'Regenerate Private Key and Certificate';
+$string['regeneratepath'] = 'Certificate path path: {$a}';
+$string['regeneratesuccess'] = 'Private Key and Certificate successfully regenerated';
+$string['regeneratewarning'] = 'Warning! Generating a new certificate will overwrite the current one and you may need to update your IDP';
 $string['rememberidp'] = 'Remember login service';
 $string['requestedattributes'] = 'Requested attributes';
 $string['requestedattributes_help'] = 'Some IdP\'s need the SP to declare which attributes will be requested or are required. Add each attribute on a new line and these will be present in the SP metadata under the <code>AttributeConsumingService</code> tag. If you want a field to be required put a space and then * after that line. {$a->example}';
 $string['required'] = 'This field is required';
 $string['requireint'] = 'This field is required and needs to be a positive integer';
+$string['selectloginservice'] = 'Select a login service';
+$string['sha1'] = 'Legacy SHA1 (Dangerous)';
+$string['sha256'] = 'SHA256';
+$string['sha384'] = 'SHA384';
+$string['sha512'] = 'SHA512';
 $string['showidplink'] = 'Display IdP link';
 $string['showidplink_help'] = 'This will display the IdP link when the site is configured.';
+$string['signaturealgorithm'] = 'Signing Algorithm';
+$string['signaturealgorithm_help'] = 'This is the algorithm that will be used to sign SAML requests. Warning: The SHA1 Algorithm is only provided for backwards compatibility, unless you absolutely must use it it is recommended to avoid it and use at least SHA256 instead.';
 $string['source'] = 'Source: {$a}';
 $string['spentityid'] = 'Entity ID';
 $string['spentityid_help'] = 'Override the Entity Id of the Service Provider. In most cases leave blank and a good default will be used instead.';
@@ -243,23 +255,3 @@ $string['update_onupdate'] = 'On update';
 $string['wantassertionssigned'] = 'Want assertions signed';
 $string['wantassertionssigned_help'] = 'Whether assertions received by this SP must be signed';
 $string['wrongauth'] = 'You have logged in successfully as \'{$a}\' but are not authorized to access Moodle.';
-/*
- * Privacy provider (GDPR)
- */
-$string["privacy:no_data_reason"] = "The Saml2 authentication plugin does not store any personal data.";
-
-/*
- * Signing Algorithm
- */
-$string['sha1'] = 'Legacy SHA1 (Dangerous)';
-$string['sha256'] = 'SHA256';
-$string['sha384'] = 'SHA384';
-$string['sha512'] = 'SHA512';
-$string['signaturealgorithm'] = 'Signing Algorithm';
-$string['signaturealgorithm_help'] = 'This is the algorithm that will be used to sign SAML requests. Warning: The SHA1 Algorithm is only provided for backwards compatibility, unless you absolutely must use it it is recommended to avoid it and use at least SHA256 instead.';
-$string['selectloginservice'] = 'Select a login service';
-$string['regenerateheader'] = 'Regenerate Private Key and Certificate';
-$string['regeneratewarning'] = 'Warning! Generating a new certificate will overwrite the current one and you may need to update your IDP';
-$string['regeneratepath'] = 'Certificate path path: {$a}';
-$string['regenerateheader'] = 'Regenerate Private Key and Certificate';
-$string['regeneratesuccess'] = 'Private Key and Certificate successfully regenerated';

@@ -24,6 +24,7 @@ use auth_saml2\form\regenerate;
  * @copyright  Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(regenerate::class)]
 final class form_regenerate_test extends \advanced_testcase {
     public function test_regenerate_certificate_form(): void {
         global $CFG, $DB, $USER;

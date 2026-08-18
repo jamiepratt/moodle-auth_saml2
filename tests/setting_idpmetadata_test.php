@@ -30,6 +30,7 @@ require_once(__DIR__ . '/../vendor/autoload.php');
  * @copyright   2018 Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(setting_idpmetadata::class)]
 final class setting_idpmetadata_test extends \advanced_testcase {
     /** @var setting_idpmetadata */
     private static $config;

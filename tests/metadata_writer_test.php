@@ -24,6 +24,7 @@ namespace auth_saml2;
  * @copyright  Copyright (c) 2017 Blackboard Inc. (http://www.blackboard.com)
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(metadata_writer::class)]
 final class metadata_writer_test extends \basic_testcase {
     public function test_write_default_path(): void {
         global $CFG;

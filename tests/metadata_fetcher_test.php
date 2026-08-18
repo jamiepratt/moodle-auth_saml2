@@ -24,6 +24,7 @@ namespace auth_saml2;
  * @copyright  Copyright (c) 2017 Blackboard Inc. (http://www.blackboard.com)
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversClass(metadata_fetcher::class)]
 final class metadata_fetcher_test extends \advanced_testcase {
     public function test_fetch_metadata_404(): void {
         $url = $this->getExternalTestFileUrl('/test404.xml');

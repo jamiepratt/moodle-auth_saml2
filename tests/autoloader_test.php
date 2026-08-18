@@ -28,6 +28,7 @@ require_once(__DIR__ . '/../vendor/autoload.php');
  * @copyright   2018 Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\CoversNothing]
 final class autoloader_test extends \advanced_testcase {
     public function test_it_loads_classes(): void {
         $classes = [
