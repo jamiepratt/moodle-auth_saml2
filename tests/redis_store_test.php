@@ -16,6 +16,10 @@
 
 namespace auth_saml2;
 
+defined('MOODLE_INTERNAL') || die();
+
+require_once(__DIR__ . '/../vendor/autoload.php');
+
 /**
  * Testcase class for auth/saml2 Redis store.
  *
@@ -30,14 +34,19 @@ final class redis_store_test extends \advanced_testcase {
      */
     protected $redis;
 
+    /** @var string Redis server used by the disposable test environment. */
+    protected $server;
+
     public function setUp(): void {
         parent::setUp();
-        if (!$this->is_redis_available()) {
-            $this->markTestSkipped('Redis was not available - skipping test');
+        $server = getenv('AUTH_SAML2_REDIS_STORE_TEST_SERVER');
+        if ($server === false || $server === '') {
+            $this->fail('AUTH_SAML2_REDIS_STORE_TEST_SERVER must identify the disposable Redis service.');
         }
+        $this->server = $server;
 
         $this->redis = new \Redis();
-        $this->redis->connect(AUTH_SAML2_REDIS_STORE_TEST_SERVER);
+        $this->redis->connect($this->server);
         $this->redis->setOption(\Redis::OPT_PREFIX, 'simpleSAMLphp.testdbname.');
         $this->redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_PHP);
     }
@@ -55,7 +64,7 @@ final class redis_store_test extends \advanced_testcase {
         $redisstore->set('session', '12345&$%8', (object) ['k' => 'v', 'k2' => 'v2'], $expire);
 
         $ttl = $this->redis->ttl('session.12345&$%8');
-        $this->assertEquals($expectedttl, $ttl, '', 5);
+        $this->assertEqualsWithDelta($expectedttl, $ttl, 5);
     }
 
     public function test_set_no_expire(): void {
@@ -102,7 +111,7 @@ final class redis_store_test extends \advanced_testcase {
         global $CFG;
 
         $this->resetAfterTest(true);
-        $CFG->auth_saml2_redis_server = AUTH_SAML2_REDIS_STORE_TEST_SERVER;
+        $CFG->auth_saml2_redis_server = $this->server;
         $CFG->dbname = 'testdbname';
 
         $value = (object) ['k' => 'v', 'k2' => 'v2'];
@@ -110,16 +119,5 @@ final class redis_store_test extends \advanced_testcase {
         $redistore->set('session', 'key', $value);
 
         $this->assertEquals($value, $redistore->get('session', 'key'));
-    }
-
-    /**
-     * Helper method to determine whether a Redis server is available to run these tests.
-     * If AUTH_SAML2_REDIS_STORE_TEST_SERVER is not set most of these tests will be skipped.
-     *
-     * @uses AUTH_SAML2_REDIS_STORE_TEST_SERVER
-     * @return bool
-     */
-    protected function is_redis_available() {
-        return defined('AUTH_SAML2_REDIS_STORE_TEST_SERVER');
     }
 }

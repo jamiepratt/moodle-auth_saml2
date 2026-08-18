@@ -23,6 +23,7 @@
  */
 
 
+// phpcs:ignore moodle.Files.RequireLogin.Missing -- Public SAML logout endpoint.
 require_once(__DIR__ . '/../../../config.php');
 require_once($CFG->dirroot . '/auth/saml2/setup.php');
 

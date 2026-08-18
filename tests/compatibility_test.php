@@ -24,8 +24,8 @@ use core\plugin_manager;
  * @package    auth_saml2
  * @copyright  2026 Shipmate
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
- * @coversNothing
  */
+#[\PHPUnit\Framework\Attributes\CoversNothing]
 final class compatibility_test extends \advanced_testcase {
     /**
      * The maintained branch explicitly supports Moodle 5.2.
@@ -39,5 +39,15 @@ final class compatibility_test extends \advanced_testcase {
             plugin_manager::VERSION_SUPPORTED,
             plugin_manager::instance()->check_explicitly_supported($plugin, 502),
         );
+    }
+
+    /**
+     * The plugin must not suppress Moodle's deprecated Behat step checks.
+     */
+    public function test_behat_context_does_not_enable_deprecated_steps(): void {
+        $context = file_get_contents(__DIR__ . '/behat/behat_auth_saml2.php');
+
+        $this->assertIsString($context);
+        $this->assertStringNotContainsString('behat_usedeprecated', $context);
     }
 }

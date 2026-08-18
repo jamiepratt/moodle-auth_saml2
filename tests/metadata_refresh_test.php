@@ -16,6 +16,7 @@
 
 namespace auth_saml2;
 
+use auth_saml2\admin\setting_idpmetadata;
 use auth_saml2\task\metadata_refresh;
 
 /**
@@ -27,26 +28,12 @@ use auth_saml2\task\metadata_refresh;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class metadata_refresh_test extends \advanced_testcase {
-    /** @var \Prophecy\Prophet */
-    protected $prophet;
-
     /**
      * Set up
      */
     public function setUp(): void {
         parent::setUp();
-        if (class_exists('\\Prophecy\\Prophet')) {
-            $this->prophet = new \Prophecy\Prophet();
-        }
         $this->resetAfterTest(true);
-    }
-
-    /**
-     * Tear down after every test.
-     */
-    protected function tearDown(): void {
-        $this->prophet = null;  // Required for Totara 12+ support (see issue #578).
-        parent::tearDown();
     }
 
     public function test_metadata_refresh_disabled(): void {
@@ -84,79 +71,75 @@ XML;
     }
 
     public function test_metadata_refresh_fetch_fails(): void {
-        $this->markTestSkipped('This test needs to be fixed or removed.');
-
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
-
         set_config('idpmetadatarefresh', 1, 'auth_saml2');
         set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');
-        $fetcher = $this->prophet->prophesize('auth_saml2\metadata_fetcher');
+
+        $setting = $this->createMock(setting_idpmetadata::class);
+        $setting->expects($this->once())
+            ->method('validate')
+            ->with('http://somefakeidpurl.local')
+            ->willReturn('Metadata fetch failed.');
 
         $refreshtask = new metadata_refresh();
-        $refreshtask->set_fetcher($fetcher->reveal());
+        $refreshtask->set_idpmetadata($setting);
 
-        $fetcher->fetch('http://somefakeidpurl.local')->willThrow(new \moodle_exception('metadatafetchfailed', 'auth_saml2'));
-        $refreshtask->execute();
+        $this->expectOutputString("Metadata fetch failed.\n");
+        self::assertFalse($refreshtask->execute());
     }
 
     public function test_metadata_refresh_parse_fails(): void {
-        $this->markTestSkipped('This test needs to be fixed or removed.');
-
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
-
         set_config('idpmetadatarefresh', 1, 'auth_saml2');
         set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');
-        $fetcher = $this->prophet->prophesize('auth_saml2\metadata_fetcher');
-        $parser = $this->prophet->prophesize('auth_saml2\metadata_parser');
+
+        $setting = $this->createMock(setting_idpmetadata::class);
+        $setting->method('validate')->willReturn('Error parsing XML.');
 
         $refreshtask = new metadata_refresh();
-        $refreshtask->set_fetcher($fetcher->reveal());
-        $refreshtask->set_parser($parser->reveal());
+        $refreshtask->set_idpmetadata($setting);
 
-        $fetcher->fetch('http://somefakeidpurl.local')->willReturn('doesnotmatter');
-        $parser->parse('doesnotmatter')->willThrow(new \moodle_exception('errorparsingxml', 'auth_saml2', '', 'error'));
-        $refreshtask->execute();
+        $this->expectOutputString("Error parsing XML.\n");
+        self::assertFalse($refreshtask->execute());
     }
 
     public function test_metadata_refresh_parse_no_entityid(): void {
-        $this->markTestSkipped('This test needs to be fixed or removed.');
-    }
-
-    public function test_metadata_refresh_parse_no_idpname(): void {
-        $this->markTestSkipped('This test needs to be fixed or removed.');
-    }
-
-    public function test_metadata_refresh_write_fails(): void {
-        $this->markTestSkipped('This test needs to be fixed or removed.');
-
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
-
-        $this->setExpectedExceptionFromAnnotation();
-
         set_config('idpmetadatarefresh', 1, 'auth_saml2');
         set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');
 
-        $fetcher = $this->prophet->prophesize('auth_saml2\metadata_fetcher');
-        $parser = $this->prophet->prophesize('auth_saml2\metadata_parser');
-        $writer = $this->prophet->prophesize('auth_saml2\metadata_writer');
+        $setting = $this->createMock(setting_idpmetadata::class);
+        $setting->method('validate')->willReturn('Metadata does not contain an entity ID.');
 
         $refreshtask = new metadata_refresh();
-        $refreshtask->set_fetcher($fetcher->reveal());
-        $refreshtask->set_parser($parser->reveal());
-        $refreshtask->set_writer($writer->reveal());
+        $refreshtask->set_idpmetadata($setting);
 
-        $fetcher->fetch('http://somefakeidpurl.local')->willReturn('somexml');
-        $parser->parse('somexml')->willReturn(null);
-        $parser->get_entityid()->willReturn('Some id');
-        $parser->get_idpdefaultname()->willReturn('Default name');
-        $md5 = md5('Some id');
-        $writer->write($md5 . '.idp.xml', 'somexml')->willThrow(new coding_exception('Metadata write failed: some error'));
-        $refreshtask->execute();
+        $this->expectOutputString("Metadata does not contain an entity ID.\n");
+        self::assertFalse($refreshtask->execute());
+    }
+
+    public function test_metadata_refresh_with_default_idp_name_succeeds(): void {
+        set_config('idpmetadatarefresh', 1, 'auth_saml2');
+        set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');
+
+        $setting = $this->createMock(setting_idpmetadata::class);
+        $setting->method('validate')->willReturn(true);
+
+        $refreshtask = new metadata_refresh();
+        $refreshtask->set_idpmetadata($setting);
+
+        $this->expectOutputString("IdP metadata refresh completed successfully.\n");
+        self::assertTrue($refreshtask->execute());
+    }
+
+    public function test_metadata_refresh_write_fails(): void {
+        set_config('idpmetadatarefresh', 1, 'auth_saml2');
+        set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');
+
+        $setting = $this->createMock(setting_idpmetadata::class);
+        $setting->method('validate')->willReturn('Metadata write failed.');
+
+        $refreshtask = new metadata_refresh();
+        $refreshtask->set_idpmetadata($setting);
+
+        $this->expectOutputString("Metadata write failed.\n");
+        self::assertFalse($refreshtask->execute());
     }
 }

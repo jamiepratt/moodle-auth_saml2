@@ -61,7 +61,7 @@ try {
     $acs = $controller->singleLogoutService($saml2auth->spname);
     $acs->sendContent();
 } catch (Exception $e) {
-    // TODO SSPHP uses Exceptions for handling valid conditions, so a succesful
+    // SSPHP uses exceptions for valid conditions, so a successful
     // logout is an Exception. This is a workaround to just go back to the home
     // page but we should probably handle SimpleSAML_Error_Error similar to how
     // extlib/simplesamlphp/www/_include.php handles it.

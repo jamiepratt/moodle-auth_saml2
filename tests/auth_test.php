@@ -21,12 +21,12 @@ namespace auth_saml2;
  *
  * @package     auth_saml2
  * @category    test
- * @group       auth_saml2
- * @covers      \auth_saml2\auth
  * @copyright   2018 Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @copyright   2021 Moodle Pty Ltd <support@moodle.com>
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\Group('auth_saml2')]
+#[\PHPUnit\Framework\Attributes\CoversClass(auth::class)]
 final class auth_test extends \advanced_testcase {
     /**
      * Set up
@@ -84,7 +84,7 @@ final class auth_test extends \advanced_testcase {
      * @return auth_saml2_generator|auth_saml2\testing\generator
      */
     protected function get_generator() {
-        if (class_exists('\core\testing\component_generator')) { // Required for Totara 15 support
+        if (class_exists('\core\testing\component_generator')) { // Required for Totara 15 support.
             return $generator = \auth_saml2\testing\generator::instance();
         } else {
             return $this->getDataGenerator()->get_plugin_generator('auth_saml2');
@@ -105,9 +105,9 @@ final class auth_test extends \advanced_testcase {
 
         $auth->expects($this->once())
             ->method('error_page')
-            ->will($this->returnCallback(function ($msg) {
+            ->willReturnCallback(function ($msg) {
                 throw new \coding_exception($msg);
-            }));
+            });
         return $auth;
     }
 
@@ -778,7 +778,6 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test test_should_login_redirect
      *
-     * @dataProvider provider_should_login_redirect
      * @param array $cfg core config
      * @param array $config plugin config
      * @param bool $param
@@ -786,6 +785,7 @@ final class auth_test extends \advanced_testcase {
      * @param bool $session
      * @param bool $expected The expected return value
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_should_login_redirect')]
     public function test_should_login_redirect($cfg, $config, $param, $multiidp, $session, $expected): void {
         global $SESSION;
 
@@ -1015,12 +1015,12 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test test_check_whitelisted_ip_redirect
      *
-     * @dataProvider provider_check_whitelisted_ip_redirect
      * @param string $saml
      * @param string $remoteip
      * @param string $whitelist
      * @param bool $expected The expected return value
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_check_whitelisted_ip_redirect')]
     public function test_check_whitelisted_ip_redirect($saml, $remoteip, $whitelist, $expected): void {
         // Setting an address here as getremoteaddr() will return default 0.0.0.0 which then is ignored by the address_in_subnet
         // function.
@@ -1073,9 +1073,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test access allowed if required attributes are not configured.
      *
-     * @dataProvider provider_is_access_allowed
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_is_access_allowed')]
     public function test_is_access_allowed_for_member_not_configured($attributes): void {
         set_config('idpattr', 'uid', 'auth_saml2');
 
@@ -1107,9 +1107,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test access allowed if configured, but restricted groups attribute is set to empty.
      *
-     * @dataProvider provider_is_access_allowed
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_is_access_allowed')]
     public function test_is_access_allowed_for_member_blocked_empty($attributes): void {
         set_config('idpattr', 'uid', 'auth_saml2');
         set_config('grouprules', 'allow groups=allowed', 'auth_saml2');
@@ -1138,9 +1138,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test access allowed if configured, but allowed groups attribute is set to empty.
      *
-     * @dataProvider provider_is_access_allowed
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_is_access_allowed')]
     public function test_is_access_allowed_for_member_allowed_empty($attributes): void {
         set_config('idpattr', 'uid', 'auth_saml2');
         set_config('grouprules', 'deny groups=blocked', 'auth_saml2');
@@ -1168,9 +1168,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test access allowed if fully configured.
      *
-     * @dataProvider provider_is_access_allowed
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_is_access_allowed')]
     public function test_is_access_allowed_for_member_allowed_and_blocked($attributes): void {
         set_config('idpattr', 'uid', 'auth_saml2');
         set_config('grouprules', "deny groups=blocked\nallow groups=allowed", 'auth_saml2');
@@ -1199,9 +1199,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test access allowed if fully configured and allowed priority is set to yes.
      *
-     * @dataProvider provider_is_access_allowed
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_is_access_allowed')]
     public function test_is_access_allowed_for_member_allowed_and_blocked_with_allowed_priority($attributes): void {
         set_config('idpattr', 'uid', 'auth_saml2');
         set_config('grouprules', "allow groups=allowed\ndeny groups=blocked", 'auth_saml2');
@@ -1230,9 +1230,9 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test test_update_custom_user_profile_fields
      *
-     * @dataProvider provider_update_custom_user_profile_fields
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_update_custom_user_profile_fields')]
     public function test_update_custom_user_profile_fields($attributes): void {
         global $CFG, $DB;
         require_once($CFG->dirroot . '/user/profile/lib.php');
@@ -1292,9 +1292,9 @@ final class auth_test extends \advanced_testcase {
      * Test test_missing_user_custom_profile_fields
      * The custom profile field does not exist, but IdP attribute data is mapped.
      *
-     * @dataProvider provider_missing_user_custom_profile_fields
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_missing_user_custom_profile_fields')]
     public function test_missing_user_custom_profile_fields($attributes): void {
         global $CFG;
         require_once($CFG->dirroot . '/user/profile/lib.php');
@@ -1338,10 +1338,10 @@ final class auth_test extends \advanced_testcase {
     /**
      * Test test_invalid_map_user_profile_fields
      *
-     * @dataProvider provider_invalid_map_user_profile_fields
      * @param array $mapping
      * @param array $attributes
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('provider_invalid_map_user_profile_fields')]
     public function test_invalid_map_user_profile_fields($mapping, $attributes): void {
         global $CFG;
         require_once($CFG->dirroot . '/user/profile/lib.php');

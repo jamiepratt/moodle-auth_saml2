@@ -9,10 +9,18 @@ Run the plugin suite from a moodle-plugin-ci installation configured for the
 Moodle `v5.2.2` tag:
 
 ```sh
-moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky --fail-on-incomplete --fail-on-skipped
+composer audit --locked
+AUTH_SAML2_REDIS_STORE_TEST_SERVER=127.0.0.1 \
+  moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky \
+  --fail-on-incomplete --fail-on-skipped --fail-on-deprecation \
+  --fail-on-phpunit-deprecation
 moodle-plugin-ci behat --profile chrome --scss-deprecations
 moodle-plugin-ci behat --profile firefox --scss-deprecations
 ```
+
+The PHPUnit suite requires a disposable Redis server. It deliberately fails
+instead of skipping Redis integration coverage when
+`AUTH_SAML2_REDIS_STORE_TEST_SERVER` is absent or unreachable.
 
 The following local manual exercises are useful when developing the synthetic
 IdP fixture. They are not CI dependencies:

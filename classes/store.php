@@ -94,7 +94,8 @@ class store implements \SimpleSAML\Store\StoreInterface {
         assert($expire > 2592000);
 
         if (rand(0, 1000) < 10) {
-            $this->delete_expired(); // TODO convert to task.
+            // Opportunistically clean expired records.
+            $this->delete_expired();
         }
 
         if (strlen($key) > 50) {

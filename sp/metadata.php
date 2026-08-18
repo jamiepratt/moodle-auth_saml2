@@ -35,6 +35,7 @@ require_once('../setup.php');
 require_once('../locallib.php');
 
 $download = optional_param('download', '', PARAM_RAW);
+$output = optional_param('output', 'xml', PARAM_ALPHA);
 if ($download) {
     header('Content-Disposition: attachment; filename=' . $saml2auth->spname . '.xml');
 }
@@ -50,18 +51,10 @@ $file = $saml2auth->get_file_sp_metadata_file($baseurl);
 
 $xml = auth_saml2_get_sp_metadata($baseurl);
 
-if (array_key_exists('output', $_REQUEST) && $_REQUEST['output'] == 'xhtml') {
-
-	$t = new SimpleSAML_XHTML_Template($config, 'metadata.php', 'admin');
-
-	$t->data['header'] = 'saml20-sp';
-	$t->data['metadata'] = htmlspecialchars($xml);
-	$t->data['metadataflat'] = '$metadata[' . var_export($entityId, TRUE) . '] = ' . var_export($metaArray20, TRUE) . ';';
-	$t->data['metaurl'] = $source->getMetadataURL();
-	$t->show();
+if ($output === 'xhtml') {
+    header('Content-Type: text/html; charset=utf-8');
+    echo html_writer::tag('pre', s($xml));
 } else {
-	// header('Content-Type: application/samlmetadata+xml');
-	header('Content-Type: text/xml');
-	echo($xml);
+    header('Content-Type: application/samlmetadata+xml');
+    echo($xml);
 }
-

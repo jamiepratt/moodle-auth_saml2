@@ -25,3 +25,7 @@ set SESSION->saml2idp during unsolicited logins
 Source: patches/0006-set-SESSION-saml2idp-during-unsolicited-logins.patch
 
 
+Complete XML metadata loading changes in SimpleSAMLphp 2.4.9.3
+Source: patches/0007-complete-xml-metadata-loading.patch
+
+

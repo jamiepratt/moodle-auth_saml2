@@ -37,10 +37,17 @@ require_once("{$CFG->libdir}/adminlib.php");
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class setting_idpmetadata extends admin_setting_configtextarea {
+    /** @var callable|null Metadata downloader override. */
+    private $downloader;
+
     /**
-     * Constructor
+     * Constructor.
+     *
+     * @param callable|null $downloader Metadata downloader override for controlled environments.
      */
-    public function __construct() {
+    public function __construct(?callable $downloader = null) {
+        $this->downloader = $downloader;
+
         // All parameters are hardcoded because there can be only one instance:
         // When it validates, it saves extra configs, preventing this component from being reused as is.
         parent::__construct(
@@ -120,6 +127,8 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             foreach ($idpelements as $childidpelements) {
                 $this->process_idp_xml($idp, $childidpelements, $xpath, $oldidps, 0);
             }
+        } else {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
         }
 
         $this->save_idp_metadata_xml($idp->idpurl, $idp->get_rawxml());
@@ -143,6 +152,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     ) {
         global $DB;
         $entityid = $idpelements->getAttribute('entityID');
+        if ($entityid === '') {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
+        }
 
         // Locate a displayname element provided by the IdP XML metadata.
         $names = $xpath->query('.//mdui:DisplayName', $idpelements);
@@ -224,7 +236,8 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                 continue;
             }
 
-            $rawxml = \download_file_content($idp->idpurl);
+            $downloader = $this->downloader ?? '\\download_file_content';
+            $rawxml = $downloader($idp->idpurl);
             if ($rawxml === false) {
                 throw new setting_idpmetadata_exception(
                     get_string('idpmetadata_badurl', 'auth_saml2', $idp->idpurl)
@@ -249,7 +262,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
 
         $rawxml = $idp->rawxml;
 
-        if (!$xml->loadXML($rawxml, LIBXML_PARSEHUGE)) {
+        if (!$xml->loadXML($rawxml, LIBXML_PARSEHUGE | LIBXML_NONET)) {
             $errors = libxml_get_errors();
             $lines = explode("\n", $rawxml);
             $msg = '';

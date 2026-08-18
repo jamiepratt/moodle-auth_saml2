@@ -25,8 +25,6 @@
 
 namespace auth_saml2;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Redis store simpleSAMLphp class for auth/saml2.
  *
@@ -69,7 +67,7 @@ class redis_store implements \SimpleSAML\Store\StoreInterface {
      * @param mixed    $value
      * @param int|null $expire
      */
-    public function set(string $type, string $key, $value, ?int $expire = null): void {
+    public function set(string $type, string $key, mixed $value, ?int $expire = null): void {
         $this->redis->set($this->make_key($type, $key), $value, $this->get_set_options($expire));
     }
 
@@ -80,7 +78,7 @@ class redis_store implements \SimpleSAML\Store\StoreInterface {
      * @param string $key
      * @return mixed|null
      */
-    public function get($type, $key) {
+    public function get(string $type, string $key): mixed {
         $value = $this->redis->get($this->make_key($type, $key));
         if ($value === false) {
             $value = null;

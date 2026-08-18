@@ -22,6 +22,7 @@
  * @license   http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
+// phpcs:ignore moodle.Files.RequireLogin.Missing -- Public SAML response endpoint.
 require_once(__DIR__ . '/../../config.php');
 
 $url = required_param('url', PARAM_LOCALURL);

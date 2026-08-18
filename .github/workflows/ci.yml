@@ -11,6 +11,7 @@ permissions:
 env:
   DB: pgsql
   MOODLE_BRANCH: v5.2.2
+  AUTH_SAML2_REDIS_STORE_TEST_SERVER: 127.0.0.1
 
 jobs:
   quality-and-phpunit:
@@ -26,6 +27,13 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 10s
           --health-timeout 5s --health-retries 3
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 3
     steps:
       - name: Check out plugin
         uses: actions/checkout@v6
@@ -36,8 +44,11 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
+          extensions: redis
           ini-values: max_input_vars=5000, opcache.enable_cli=1
           coverage: none
+      - name: Audit locked dependencies
+        run: composer audit --locked --working-dir=plugin
       - name: Install moodle-plugin-ci
         run: |
           composer create-project -n --no-dev --prefer-dist moodlehq/moodle-plugin-ci ci ^4
@@ -59,7 +70,8 @@ jobs:
       - name: PHPUnit
         run: >-
           moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky
-          --fail-on-incomplete --fail-on-skipped
+          --fail-on-incomplete --fail-on-skipped --fail-on-deprecation
+          --fail-on-phpunit-deprecation
 
   behat:
     runs-on: ubuntu-24.04

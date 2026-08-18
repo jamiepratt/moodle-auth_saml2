@@ -367,6 +367,22 @@ EOF;
         $this->getSession()->getDriver()->executeScript('document.cookie = "' .
                 addslashes_js($cookiename) . '=; expires=Thu, 01 Jan 1970 00:00:00 GMT";');
     }
+
+    /**
+     * Submits a POST request to the site homepage.
+     *
+     * @When /^I submit a POST request to site homepage +\# auth_saml2$/
+     */
+    public function i_submit_a_post_request_to_site_homepage(): void {
+        $this->getSession()->getDriver()->executeScript(<<<JS
+            const form = document.createElement('form');
+            form.method = 'post';
+            form.action = window.location.href;
+            document.body.appendChild(form);
+            form.submit();
+            JS);
+    }
+
     /**
      * Visist saml2 login page.
      */
@@ -388,25 +404,5 @@ EOF;
     private function reset_moodle_session() {
         $this->i_go_to_the_login_page_with_auth_saml('saml=off');
         $this->getSession()->reset();
-    }
-
-    /**
-     * Helper function to execute api in a given context.
-     *
-     * Note: The contextapi does not support a callback.
-     *
-     * @param string|array $contextapi context in which api is defined.
-     * @param mixed $params list of params to pass or a single parameter
-     */
-    protected function execute(
-        string|array $contextapi,
-        mixed $params = []
-    ): void {
-        global $CFG;
-
-        // We allow usage of depricated behat steps for now.
-        $CFG->behat_usedeprecated = true;
-
-        parent::execute($contextapi, $params);
     }
 }

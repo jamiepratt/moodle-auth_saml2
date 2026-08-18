@@ -39,23 +39,30 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::$config = new setting_idpmetadata();
     }
 
-    /**
-     * Get test metadata URL.
-     *
-     * @return string
-     */
-    private function get_test_metadata_url() {
-        if (!defined('AUTH_SAML2_TEST_IDP_METADATA')) {
-            $this->markTestSkipped();
-        }
-        return AUTH_SAML2_TEST_IDP_METADATA;
-    }
-
     public function test_it_validates_the_xml(): void {
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         $data = self::$config->validate($xml);
         self::assertTrue($data);
+    }
+
+    public function test_it_rejects_metadata_without_an_idp_descriptor(): void {
+        $this->resetAfterTest();
+        $xml = '<?xml version="1.0"?><md:EntitiesDescriptor ' .
+            'xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" />';
+
+        self::assertSame(get_string('idpmetadata_invalid', 'auth_saml2'), self::$config->validate($xml));
+    }
+
+    public function test_it_rejects_an_empty_entity_id(): void {
+        $this->resetAfterTest();
+        $xml = <<<'XML'
+            <md:EntityDescriptor entityID="" xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata">
+                <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol" />
+            </md:EntityDescriptor>
+            XML;
+
+        self::assertSame(get_string('idpmetadata_invalid', 'auth_saml2'), self::$config->validate($xml));
     }
 
     public function test_it_saves_all_idp_information(): void {
@@ -132,9 +139,14 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     }
 
     public function test_it_gets_idp_data_for_two_urls(): void {
-        $url = $this->get_test_metadata_url();
-        $url = "{$url}\n{$url}?second";
-        $data = self::$config->get_idps_data($url);
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        $config = new setting_idpmetadata(static function (string $url) use ($xml): string {
+            return $xml;
+        });
+
+        $urls = "https://idp-one.invalid/metadata\nhttps://idp-two.invalid/metadata";
+        $data = $config->get_idps_data($urls);
+
         self::assertCount(2, $data);
         $this->validate_idp_data_array($data);
     }

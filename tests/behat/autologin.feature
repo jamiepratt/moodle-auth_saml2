@@ -17,8 +17,9 @@ Feature: Automatically log in
       | user     | course | role |
       | student1 | C1     | student |
     And the following config values are set as admin:
-      | auth      | saml2 |            |
-      | autologin | 1     | auth_saml2 |
+      | auth            | saml2 |            |
+      | autologin       | 1     | auth_saml2 |
+      | autologinguests | 1     |            |
     When I am on site homepage
     And the mock SAML IdP allows passive login with the following attributes: # auth_saml2
       | uid | student1 |
@@ -37,14 +38,15 @@ Feature: Automatically log in
       | shortname | fullname |
       | C1        | Course 1 |
     And the following config values are set as admin:
-      | auth      | saml2 |            |
-      | autologin | 1     | auth_saml2 |
+      | auth            | saml2 |            |
+      | autologin       | 1     | auth_saml2 |
+      | autologinguests | 1     |            |
     When I am on site homepage
     And the mock SAML IdP does not allow passive login # auth_saml2
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # Future requests should not contact the IdP.
-    When I follow "Course 1"
+    When I am on site homepage
     Then I should see "Log in"
 
   Scenario: Autologin on cookie change
@@ -63,20 +65,21 @@ Feature: Automatically log in
       | auth            | saml2 |            |
       | autologin       | 2     | auth_saml2 |
       | autologincookie | frog  | auth_saml2 |
+      | autologinguests | 1     |            |
 
     # No login attempt initially.
     When I am on site homepage
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # Changing the cookies results in a login attempt.
     When the cookie "frog" is set to "Kermit" # auth_saml2
     And I am on site homepage
     And the mock SAML IdP does not allow passive login # auth_saml2
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # No login attempt on another page request.
     When I am on site homepage
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # Changing cookies again, there will be another login attempt.
     When the cookie "frog" is set to "Mr Toad" # auth_saml2
@@ -129,9 +132,7 @@ Feature: Automatically log in
       | auth            | saml2 |            |
       | autologin       | 2     | auth_saml2 |
       | autologincookie | frog  | auth_saml2 |
-    And the following "blocks" exist:
-      | blockname     | contextlevel | reference | pagetypepattern | defaultregion |
-      | html | System       | 1         | site-index       | side-post     |
+      | autologinguests | 1     |            |
     And I am on site homepage
 
     # With this config, changing the cookie would usually result in an autologin attempt.
@@ -139,35 +140,26 @@ Feature: Automatically log in
 
     # Situation 1: Autologin does not run on login screens.
     And I follow "Log in"
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # Situation 2: Autologin does not run if turned off (obviously).
     When the following config values are set as admin:
       | autologin | 0 | auth_saml2 |
     And I am on site homepage
-    Then I should see "You are not logged in."
+    Then I should see "Log in"
 
     # Situation 3: Autologin does not run if the plugin is not enabled.
     When the following config values are set as admin:
       | autologin | 2      | auth_saml2 |
       | auth      | manual |            |
     And I am on site homepage
-    Then I should see "You are not logged in."
-
-    # Set up the homepage so that we can test POST requests
-    When I log in as "admin"
-    And I am on site homepage
-    And I turn editing mode on
-    And I configure the "block_html" block
-    And I set the field "Content" to "<form method='post' action='.'><div><button type='submit'>PostTest</button></div></form>"
-    And I press "Save changes"
-    And I click on "Log out" "link" in the "#page-footer" "css_element"
+    Then I should see "Log in"
 
     # Situation 4: Autologin does not run on POST requests.
     When the following config values are set as admin:
       | auth | saml2 |
-    And I press "PostTest"
-    Then I should see "You are not logged in."
+    And I submit a POST request to site homepage # auth_saml2
+    Then I should see "Log in"
 
     # Finally, just confirm we have things set up right by trying a normal GET request.
     When I am on site homepage

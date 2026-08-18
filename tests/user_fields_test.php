@@ -136,11 +136,10 @@ final class user_fields_test extends \advanced_testcase {
     /**
      * Test that we can find put if the field is a custom profile field.
      *
-     * @dataProvider is_custom_profile_field_data_provider
-     *
      * @param mixed $value Test value.
      * @param bool $expected Expected value.
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('is_custom_profile_field_data_provider')]
     public function test_is_custom_profile_field($value, bool $expected): void {
         $this->assertSame($expected, user_fields::is_custom_profile_field($value));
     }
@@ -161,11 +160,10 @@ final class user_fields_test extends \advanced_testcase {
     /**
      * Test that we can get field shortname from the profile field name.
      *
-     * @dataProvider get_short_name_data_provider
-     *
      * @param string $value Test value.
      * @param string $expected Expected value.
      */
+    #[\PHPUnit\Framework\Attributes\DataProvider('get_short_name_data_provider')]
     public function test_get_short_name(string $value, string $expected): void {
         $this->assertSame($expected, user_fields::get_field_short_name($value));
     }

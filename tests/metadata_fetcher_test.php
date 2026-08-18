@@ -25,27 +25,6 @@ namespace auth_saml2;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 final class metadata_fetcher_test extends \advanced_testcase {
-    /** @var \Prophecy\Prophet */
-    protected $prophet;
-
-    /**
-     * Set up
-     */
-    public function setUp(): void {
-        parent::setUp();
-        if (class_exists('\\Prophecy\\Prophet')) {
-            $this->prophet = new \Prophecy\Prophet();
-        }
-    }
-
-    /**
-     * Tear down after every test.
-     */
-    protected function tearDown(): void {
-        $this->prophet = null; // Required for Totara 12+ support (see issue #578).
-        parent::tearDown();
-    }
-
     public function test_fetch_metadata_404(): void {
         $url = $this->getExternalTestFileUrl('/test404.xml');
         $fetcher = new metadata_fetcher();
@@ -70,20 +49,16 @@ final class metadata_fetcher_test extends \advanced_testcase {
     }
 
     public function test_fetch_metadata_curlerrorno(): void {
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
-
         $url = 'http://fakeurl.localhost';
-        $curl = $this->prophet->prophesize('curl');
+        $curl = $this->createMock(\curl::class);
 
         $fetcher = new metadata_fetcher();
-        $curl->get($url, Prophecy\Argument::type('array'))->willReturn('some bad stuff');
-        $curl->get_errno()->willReturn(CURLE_READ_ERROR);
-        $curl->get_info()->willReturn(['http_status' => 503]);
+        $curl->method('get')->with($url, $this->isType('array'))->willReturn('some bad stuff');
+        $curl->method('get_errno')->willReturn(CURLE_READ_ERROR);
+        $curl->method('get_info')->willReturn(['http_status' => 503]);
 
         try {
-            $fetcher->fetch($url, $curl->reveal());
+            $fetcher->fetch($url, $curl);
             // Fail if the exception is not thrown.
             $this->fail();
         } catch (\moodle_exception $e) {
@@ -99,20 +74,16 @@ final class metadata_fetcher_test extends \advanced_testcase {
     }
 
     public function test_fetch_metadata_nohttpstatus(): void {
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
-
         $url = 'http://fakeurl.localhost';
-        $curl = $this->prophet->prophesize('curl');
+        $curl = $this->createMock(\curl::class);
 
         $fetcher = new metadata_fetcher();
-        $curl->get($url, Prophecy\Argument::type('array'))->willReturn('');
-        $curl->get_info()->willReturn([]);
-        $curl->get_errno()->willReturn(0);
+        $curl->method('get')->with($url, $this->isType('array'))->willReturn('');
+        $curl->method('get_info')->willReturn([]);
+        $curl->method('get_errno')->willReturn(0);
 
         try {
-            $fetcher->fetch($url, $curl->reveal());
+            $fetcher->fetch($url, $curl);
             // Fail if the exception is not thrown.
             $this->fail();
         } catch (\moodle_exception $e) {
@@ -127,10 +98,6 @@ final class metadata_fetcher_test extends \advanced_testcase {
 
     public function test_fetch_metadata_override_ssl_options(): void {
         global $CFG;
-
-        if (!isset($this->prophet)) {
-            $this->markTestSkipped('Skipping due to Prophecy library not available');
-        }
 
         $this->resetAfterTest(true);
 
@@ -154,15 +121,14 @@ final class metadata_fetcher_test extends \advanced_testcase {
         $CFG->forced_plugin_settings['auth_saml2']['CURLOPT_SSL_VERIFYPEER'] = 0;
         $CFG->forced_plugin_settings['auth_saml2']['CURLOPT_SSL_VERIFYHOST'] = 0;
 
-        $curl = $this->prophet->prophesize('curl');
+        $curl = $this->createMock(\curl::class);
 
         $fetcher = new metadata_fetcher();
 
-        // Prophecy asserts that indeed the options passed to curl->get() from fetch() contained forced settings.
-        $curl->get($url, $options)->willReturn('Some error');
-        $curl->get_info()->willReturn(['http_code' => 200]);
-        $curl->get_errno()->willReturn(0);
+        $curl->expects($this->once())->method('get')->with($url, $options)->willReturn('Some error');
+        $curl->method('get_info')->willReturn(['http_code' => 200]);
+        $curl->method('get_errno')->willReturn(0);
 
-        $fetcher->fetch($url, $curl->reveal());
+        $fetcher->fetch($url, $curl);
     }
 }

@@ -21,12 +21,12 @@ namespace auth_saml2;
  *
  * @package     auth_saml2
  * @category    test
- * @group       auth_saml2
- * @covers      \auth_saml2_generator
  * @copyright   2021 Catalyst IT Australia {@link http://www.catalyst-au.net}
  * @copyright   2021 Moodle Pty Ltd <support@moodle.com>
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+#[\PHPUnit\Framework\Attributes\Group('auth_saml2')]
+#[\PHPUnit\Framework\Attributes\CoversClass(\auth_saml2_generator::class)]
 final class generator_test extends \advanced_testcase {
     /**
      * Set up
@@ -42,7 +42,7 @@ final class generator_test extends \advanced_testcase {
      * @return auth_saml2_generator|auth_saml2\testing\generator
      */
     protected function get_generator() {
-        if (class_exists('\core\testing\component_generator')) { // Required for Totara 15 support
+        if (class_exists('\core\testing\component_generator')) { // Required for Totara 15 support.
             return $generator = \auth_saml2\testing\generator::instance();
         } else {
             return $this->getDataGenerator()->get_plugin_generator('auth_saml2');
@@ -80,34 +80,28 @@ final class generator_test extends \advanced_testcase {
         $this->get_generator()->create_idp_entity();
         $auth = get_auth_plugin('saml2');
         $this->assertCount(2, $auth->metadataentities);
-        // Backwards compatibility with older PHPUnit - use old Canonicalizing method.
-        if (method_exists($this, 'assertEqualsCanonicalizing')) {
-            $this->assertEqualsCanonicalizing(['Test IdP 1', 'Test IdP 2'], array_column($auth->metadataentities, 'name'));
-        } else {
-            $this->assertEquals(['Test IdP 1', 'Test IdP 2'], array_column($auth->metadataentities, 'name'), '', 0, 10, true);
-        }
+        $this->assertEqualsCanonicalizing(
+            ['Test IdP 1', 'Test IdP 2'],
+            array_column($auth->metadataentities, 'name'),
+        );
 
         // Create non-active entity, it should not be added to metadataentities.
         $this->get_generator()->create_idp_entity(['activeidp' => 0]);
         $auth = get_auth_plugin('saml2');
         $this->assertCount(2, $auth->metadataentities);
-        // Backwards compatibility with older PHPUnit - use old Canonicalizing method.
-        if (method_exists($this, 'assertEqualsCanonicalizing')) {
-            $this->assertEqualsCanonicalizing(['Test IdP 1', 'Test IdP 2'], array_column($auth->metadataentities, 'name'));
-        } else {
-            $this->assertEquals(['Test IdP 1', 'Test IdP 2'], array_column($auth->metadataentities, 'name'), '', 0, 10, true);
-        }
+        $this->assertEqualsCanonicalizing(
+            ['Test IdP 1', 'Test IdP 2'],
+            array_column($auth->metadataentities, 'name'),
+        );
 
         // Create custom named entity.
         $this->get_generator()->create_idp_entity(['defaultname' => 'Generator']);
         $auth = get_auth_plugin('saml2');
         $this->assertCount(3, $auth->metadataentities);
-        // Backwards compatibility with older PHPUnit - use old Canonicalizing method.
-        if (method_exists($this, 'assertEqualsCanonicalizing')) {
-            $this->assertEqualsCanonicalizing(['Test IdP 1', 'Test IdP 2', 'Generator'], array_column($auth->metadataentities, 'name'));
-        } else {
-            $this->assertEquals(['Test IdP 1', 'Test IdP 2', 'Generator'], array_column($auth->metadataentities, 'name'), '', 0, 10, true);
-        }
+        $this->assertEqualsCanonicalizing(
+            ['Test IdP 1', 'Test IdP 2', 'Generator'],
+            array_column($auth->metadataentities, 'name'),
+        );
     }
 
     /**

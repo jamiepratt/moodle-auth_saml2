@@ -1,6 +1,7 @@
 {
     "name": "kbanning/moodle-auth_saml2",
     "description": "SAML done 100% in Moodle, fast, simple, secure",
+    "license": "GPL-3.0-or-later",
     "type": "library",
     "config": {
         "prepend-autoloader": false,
@@ -31,7 +32,8 @@
                 "Issue #768: Force de-prioritisation of BINDING_HTTP_ARTIFACT": "patches/0003-Issue-768-Force-de-prioritisation-of-BINDING_HTTP_AR.patch",
                 "Update post.twig to point to publicly available post files (#793)": "patches/0004-Update-post.twig-to-point-to-publicly-available-post.patch",
                 "[#801] fix issue with IdP initiated login after upgrade to v2.0.5 (#802)": "patches/0005-801-fix-issue-with-IdP-initiated-login-after-upgrade.patch",
-                "set SESSION->saml2idp during unsolicited logins": "patches/0006-set-SESSION-saml2idp-during-unsolicited-logins.patch"
+                "set SESSION->saml2idp during unsolicited logins": "patches/0006-set-SESSION-saml2idp-during-unsolicited-logins.patch",
+                "Complete XML metadata loading changes in SimpleSAMLphp 2.4.9.3": "patches/0007-complete-xml-metadata-loading.patch"
             }
         }
     }

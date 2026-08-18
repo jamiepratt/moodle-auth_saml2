@@ -93,11 +93,12 @@ $config = [
 
     'store.type' => !empty($CFG->auth_saml2_store) ? $CFG->auth_saml2_store : '\\auth_saml2\\store',
 
-    'proxy' => null, // TODO inherit from moodle conf see http://moodle.local/admin/settings.php?section=http for more.
+    // SimpleSAMLphp proxy settings are not inherited from Moodle.
+    'proxy' => null,
 
     'authproc.sp' => \auth_saml2\api::authproc_filters_hook(),
 
-    // TODO setting for redirect.sign.
+    // Redirect signing uses the SimpleSAMLphp default.
 ];
 
 // Save this in a global for later.

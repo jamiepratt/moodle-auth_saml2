@@ -24,7 +24,6 @@ Feature: Login
       | field_updatelocal_lastname  | onlogin    | auth_saml2 |
     And the saml2 setting "Dual Login" is set to "no"                          # auth_saml2
     And I am on site homepage
-    And I follow "Log in"
     And the mock SAML IdP allows login with the following attributes:          # auth_saml2
       | uid        | student1 |
       | sillyname1 | Anne     |
@@ -39,10 +38,9 @@ Feature: Login
     And the mock SAML IdP is configured                                        # auth_saml2
     And the saml2 setting "Dual Login" is set to "no"                          # auth_saml2
     And I am on site homepage
-    And I follow "Log in"
     And the mock SAML IdP allows login with the following attributes:          # auth_saml2
       | uid | student1 |
     Then I should see "You are logged in as Eigh Person"
     And I click on "Log out" "link" in the "#page-footer" "css_element"
     And the mock SAML IdP confirms logout                                      # auth_saml2
-    And I should see "You are not logged in."
+    And I should see "Mock IdP login"
