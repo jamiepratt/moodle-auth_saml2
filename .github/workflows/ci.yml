@@ -40,6 +40,8 @@ jobs:
         with:
           path: plugin
           persist-credentials: false
+      - name: Validate CI workflow contract
+        run: bash plugin/tests/ci_workflow_contract_test.sh
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -68,8 +70,10 @@ jobs:
       - name: Upgrade savepoints
         run: moodle-plugin-ci savepoints
       - name: PHPUnit
+        working-directory: moodle
         run: >-
-          moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky
+          vendor/bin/phpunit --testsuite auth_saml2_testsuite
+          --fail-on-warning --fail-on-risky
           --fail-on-incomplete --fail-on-skipped --fail-on-deprecation
           --fail-on-phpunit-deprecation
 

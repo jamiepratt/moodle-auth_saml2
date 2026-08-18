@@ -10,10 +10,12 @@ Moodle `v5.2.2` tag:
 
 ```sh
 composer audit --locked
-AUTH_SAML2_REDIS_STORE_TEST_SERVER=127.0.0.1 \
-  moodle-plugin-ci phpunit --fail-on-warning --fail-on-risky \
+cd moodle
+AUTH_SAML2_REDIS_STORE_TEST_SERVER=127.0.0.1 vendor/bin/phpunit \
+  --testsuite auth_saml2_testsuite --fail-on-warning --fail-on-risky \
   --fail-on-incomplete --fail-on-skipped --fail-on-deprecation \
   --fail-on-phpunit-deprecation
+cd ..
 moodle-plugin-ci behat --profile chrome --scss-deprecations
 moodle-plugin-ci behat --profile firefox --scss-deprecations
 ```
