@@ -1,4 +1,4 @@
-[![ci](https://github.com/kbanning/moodle-auth_saml2/actions/workflows/ci.yml/badge.svg?branch=MOODLE_502_STABLE)](https://github.com/kbanning/moodle-auth_saml2/actions/workflows/ci.yml?branch=MOODLE_502_STABLE)
+[![ci](https://github.com/jamiepratt/moodle-auth_saml2/actions/workflows/ci.yml/badge.svg?branch=MOODLE_502_STABLE)](https://github.com/jamiepratt/moodle-auth_saml2/actions/workflows/ci.yml?branch=MOODLE_502_STABLE)
 
 > [!IMPORTANT]
 > This is Shipmate's Moodle 5.2 maintenance fork of
@@ -90,7 +90,7 @@ Features not yet implemented:
 git to clone it into your source:
 
    ```sh
-   git clone --branch MOODLE_502_STABLE git@github.com:kbanning/moodle-auth_saml2.git auth/saml2
+   git clone --branch MOODLE_502_STABLE git@github.com:jamiepratt/moodle-auth_saml2.git auth/saml2
    ```
 
 2. Then run the Moodle upgrade

@@ -1,5 +1,5 @@
 {
-    "name": "kbanning/moodle-auth_saml2",
+    "name": "jamiepratt/moodle-auth_saml2",
     "description": "SAML done 100% in Moodle, fast, simple, secure",
     "license": "GPL-3.0-or-later",
     "type": "library",

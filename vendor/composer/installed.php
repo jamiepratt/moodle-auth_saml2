@@ -1,6 +1,6 @@
 <?php return array(
     'root' => array(
-        'name' => 'kbanning/moodle-auth_saml2',
+        'name' => 'jamiepratt/moodle-auth_saml2',
         'pretty_version' => 'dev-57d70f2487bbb8fb44bed2935ca72dd22d138e11',
         'version' => 'dev-57d70f2487bbb8fb44bed2935ca72dd22d138e11',
         'reference' => '57d70f2487bbb8fb44bed2935ca72dd22d138e11',
@@ -55,7 +55,7 @@
             'aliases' => array(),
             'dev_requirement' => false,
         ),
-        'kbanning/moodle-auth_saml2' => array(
+        'jamiepratt/moodle-auth_saml2' => array(
             'pretty_version' => 'dev-57d70f2487bbb8fb44bed2935ca72dd22d138e11',
             'version' => 'dev-57d70f2487bbb8fb44bed2935ca72dd22d138e11',
             'reference' => '57d70f2487bbb8fb44bed2935ca72dd22d138e11',
