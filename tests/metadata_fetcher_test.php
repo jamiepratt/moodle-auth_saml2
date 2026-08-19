@@ -27,11 +27,16 @@ namespace auth_saml2;
 #[\PHPUnit\Framework\Attributes\CoversClass(metadata_fetcher::class)]
 final class metadata_fetcher_test extends \advanced_testcase {
     public function test_fetch_metadata_404(): void {
-        $url = $this->getExternalTestFileUrl('/test404.xml');
+        $url = 'https://idp.test/missing-metadata.xml';
+        $curl = $this->createMock(\curl::class);
+        $curl->method('get')->with($url, $this->isType('array'))->willReturn('');
+        $curl->method('get_info')->willReturn(['http_code' => 404]);
+        $curl->method('get_errno')->willReturn(0);
+
         $fetcher = new metadata_fetcher();
 
         try {
-            $fetcher->fetch($url);
+            $fetcher->fetch($url, $curl);
             // Fail if the exception is not thrown.
             $this->fail();
         } catch (\moodle_exception $e) {
@@ -40,11 +45,19 @@ final class metadata_fetcher_test extends \advanced_testcase {
     }
 
     public function test_fetch_metadata_success(): void {
-        $url = $this->getExternalTestFileUrl('/test.html');
+        $url = 'https://idp.test/metadata.xml';
+        $metadata = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        $this->assertIsString($metadata);
+
+        $curl = $this->createMock(\curl::class);
+        $curl->method('get')->with($url, $this->isType('array'))->willReturn($metadata);
+        $curl->method('get_info')->willReturn(['http_code' => 200]);
+        $curl->method('get_errno')->willReturn(0);
+
         $fetcher = new metadata_fetcher();
 
-        $result = $fetcher->fetch($url);
-        $this->assertNotEmpty($result);
+        $result = $fetcher->fetch($url, $curl);
+        $this->assertSame($metadata, $result);
         $this->assertEquals(0, (int) $fetcher->get_curlerrorno());
         $this->assertEquals(200, (int) $fetcher->get_curlinfo()['http_code']);
     }
