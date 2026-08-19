@@ -27,6 +27,22 @@ namespace auth_saml2;
 #[\PHPUnit\Framework\Attributes\CoversClass(user_extractor::class)]
 final class user_extractor_test extends \advanced_testcase {
     /**
+     * Create a user with an ID number that survives aggregate user-created observers.
+     *
+     * @param string $idnumber ID number to persist.
+     * @return \stdClass
+     */
+    protected function create_user_with_idnumber(string $idnumber): \stdClass {
+        global $DB;
+
+        $user = $this->getDataGenerator()->create_user();
+        $DB->set_field('user', 'idnumber', $idnumber, ['id' => $user->id]);
+        $user->idnumber = $idnumber;
+
+        return $user;
+    }
+
+    /**
      * A helper function to create a custom profile field.
      *
      * @param string $shortname Short name of the field.
@@ -92,6 +108,45 @@ final class user_extractor_test extends \advanced_testcase {
 
         $actual = user_extractor::get_user('idnumber', '');
         $this->assertFalse($actual);
+    }
+
+    /**
+     * Test case-insensitive matching rejects multiple core-field users.
+     */
+    public function test_get_user_by_core_field_case_insensitive_when_multiple_users_found(): void {
+        $this->resetAfterTest();
+
+        $this->create_user_with_idnumber('DUPLICATE');
+        $this->create_user_with_idnumber('duplicate');
+
+        $actual = user_extractor::get_user('idnumber', 'Duplicate', true);
+        $this->assertFalse($actual);
+    }
+
+    /**
+     * Test matching rejects core fields that cannot be configured as SAML identifiers.
+     */
+    public function test_get_user_by_unconfigured_core_field(): void {
+        $this->resetAfterTest();
+
+        $user = $this->getDataGenerator()->create_user(['firstname' => 'Unique SAML Match']);
+
+        $actual = user_extractor::get_user('firstname', $user->firstname, true);
+        $this->assertFalse($actual);
+    }
+
+    /**
+     * Test case-insensitive core-field matching treats wildcard characters literally.
+     */
+    public function test_get_user_by_core_field_case_insensitive_with_wildcards(): void {
+        $this->resetAfterTest();
+
+        $expecteduser = $this->create_user_with_idnumber('MATCH_100%');
+        $this->create_user_with_idnumber('MATCHA100VALUE');
+
+        $actual = user_extractor::get_user('idnumber', 'match_100%', true);
+        $this->assertNotFalse($actual);
+        $this->assertSame($expecteduser->id, $actual->id);
     }
 
     /**
@@ -229,7 +284,7 @@ final class user_extractor_test extends \advanced_testcase {
         $this->resetAfterTest();
 
         // Arrange data.
-        $expecteduser = $this->getDataGenerator()->create_user(['idnumber' => 'NB256']);
+        $expecteduser = $this->create_user_with_idnumber('NB256');
 
         // Should match with same case.
         $actualuser = user_extractor::get_user('idnumber', 'NB256', true);
@@ -264,7 +319,7 @@ final class user_extractor_test extends \advanced_testcase {
         $this->resetAfterTest();
 
         // Arrange data.
-        $expecteduser = $this->getDataGenerator()->create_user(['idnumber' => 'NB256á']);
+        $expecteduser = $this->create_user_with_idnumber('NB256á');
 
         // Should match with same case and with accent (accentsensitive = true).
         $actualuser = user_extractor::get_user('idnumber', 'NB256á', true);
