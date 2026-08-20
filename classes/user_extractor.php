@@ -66,11 +66,14 @@ class user_extractor {
             $fieldsql = " AND " . $DB->sql_equal('d.data', ':fieldvalue', !$insensitive, $accentsensitive);
             $params['fieldname'] = $fieldname;
         } else {
-            // Check if requested field exists, required for Totara compatibility.
-            $fields = array_merge(\core_user::AUTHSYNCFIELDS, ['id', 'username']);
-            if (in_array($fieldname, $fields)) {
-                $fieldsql = " AND " . $DB->sql_equal('u.' . $fieldname, ':fieldvalue', !$insensitive, $accentsensitive);
-                $params['fieldname'] = $fieldname;
+            $fields = array_merge(user_fields::MATCH_FIELDS_FROM_USER_TABLE, ['id']);
+            if (in_array($fieldname, $fields, true)) {
+                $fieldsql = " AND " . $DB->sql_equal(
+                    'u.' . $fieldname,
+                    ':fieldvalue',
+                    !$insensitive,
+                    $accentsensitive
+                );
             }
         }
 
