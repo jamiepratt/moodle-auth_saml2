@@ -42,6 +42,9 @@ require_once(__DIR__ . '/../../../../lib/behat/behat_base.php');
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class behat_auth_saml2 extends behat_base {
+    /** @var string Last captured self-test response. */
+    private string $lastselftestresponse = '';
+
     /**
      * Confirms the Authentication plugin is enabled
      *
@@ -79,6 +82,32 @@ class behat_auth_saml2 extends behat_base {
                 break;
         }
         $this->getSession()->visit($this->locate_path($page));
+    }
+
+    /**
+     * Request the self-test page without leaving Behat on an expected exception page.
+     *
+     * @When /^I request the self-test page +\# auth_saml2$/
+     */
+    public function i_request_the_self_test_page_auth_saml(): void {
+        $this->getSession()->visit($this->locate_path('/auth/saml2/test.php'));
+        $this->lastselftestresponse = $this->getSession()->getPage()->getContent();
+        $this->getSession()->visit($this->locate_path('/'));
+    }
+
+    /**
+     * Assert text in the captured self-test response.
+     *
+     * @param string $expected Expected response text.
+     * @Then /^the self-test response should contain "([^"]*)" +\# auth_saml2$/
+     */
+    public function the_self_test_response_should_contain_auth_saml(string $expected): void {
+        if (!str_contains($this->lastselftestresponse, $expected)) {
+            throw new ExpectationException(
+                "The self-test response did not contain '{$expected}'.",
+                $this->getSession()
+            );
+        }
     }
 
     /**
