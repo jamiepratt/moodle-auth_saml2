@@ -408,5 +408,17 @@ function xmldb_auth_saml2_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2023100300, 'auth', 'saml2');
     }
 
+    if ($oldversion < 2026082900) {
+        // Trust the already-installed inline metadata without fetching, rewriting, or disabling SAML.
+        try {
+            (new \auth_saml2\metadata_trust_manager())->bootstrap_configured_inline();
+        } catch (\Throwable $exception) {
+            // Invalid legacy metadata must not block the Moodle upgrade or alter the active SAML configuration.
+            mtrace('SAML metadata trust baseline was not seeded: ' . $exception->getMessage());
+        }
+
+        upgrade_plugin_savepoint(true, 2026082900, 'auth', 'saml2');
+    }
+
     return true;
 }

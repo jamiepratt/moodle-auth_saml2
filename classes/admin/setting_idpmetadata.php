@@ -19,6 +19,8 @@ namespace auth_saml2\admin;
 use admin_setting_configtextarea;
 use auth_saml2\idp_data;
 use auth_saml2\idp_parser;
+use auth_saml2\metadata_fetcher;
+use auth_saml2\metadata_trust_manager;
 use DOMDocument;
 use DOMElement;
 use DOMNodeList;
@@ -76,12 +78,30 @@ class setting_idpmetadata extends admin_setting_configtextarea {
 
         try {
             $idps = $this->get_idps_data($value);
+            if ((new metadata_trust_manager())->review($value, $idps) === metadata_trust_manager::PENDING) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_pendingapproval', 'auth_saml2'));
+            }
             $this->process_all_idps_metadata($idps);
-        } catch (setting_idpmetadata_exception $exception) {
+        } catch (setting_idpmetadata_exception | \moodle_exception $exception) {
             return $exception->getMessage();
         }
 
         return true;
+    }
+
+    /**
+     * Activate metadata after out-of-band confirmation by an authorised owner.
+     *
+     * @param int $userid Approver user ID.
+     * @param string $authority Owner or emergency delegate.
+     */
+    public function approve_pending(int $userid, string $authority): void {
+        $manager = new metadata_trust_manager();
+        $manager->validate_authority($authority);
+        $pending = $manager->get_pending_data();
+        $this->process_all_idps_metadata($pending['idps']);
+        set_config('idpmetadata', $pending['configvalue'], 'auth_saml2');
+        $manager->commit_pending($userid, $authority);
     }
 
     /**
@@ -236,8 +256,18 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                 continue;
             }
 
-            $downloader = $this->downloader ?? '\\download_file_content';
-            $rawxml = $downloader($idp->idpurl);
+            if (strtolower((string) parse_url($idp->idpurl, PHP_URL_SCHEME)) !== 'https') {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_httpsrequired', 'auth_saml2'));
+            }
+
+            $downloader = $this->downloader ?? static function (string $url): string {
+                return (new metadata_fetcher())->fetch($url);
+            };
+            try {
+                $rawxml = $downloader($idp->idpurl);
+            } catch (\moodle_exception $exception) {
+                throw new setting_idpmetadata_exception($exception->getMessage(), 0, $exception);
+            }
             if ($rawxml === false) {
                 throw new setting_idpmetadata_exception(
                     get_string('idpmetadata_badurl', 'auth_saml2', $idp->idpurl)
@@ -302,6 +332,8 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         require_once("{$CFG->dirroot}/auth/saml2/setup.php");
 
         $file = $saml2auth->get_file_idp_metadata_file($url);
-        file_put_contents($file, $xml);
+        if (file_put_contents($file, $xml, LOCK_EX) === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
     }
 }
