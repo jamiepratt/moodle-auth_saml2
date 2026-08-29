@@ -22,9 +22,9 @@
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-// Require_login is not needed here.
-// phpcs:disable moodle.Files.RequireLogin.Missing
 require_once(__DIR__ . '/../../config.php');
+require_login();
+require_capability('moodle/site:config', context_system::instance());
 require('setup.php');
 
 // Check we are in debug mode to use this tool.
@@ -35,6 +35,9 @@ if (!$saml2auth->is_debugging()) {
 if (!\auth_saml2\api::is_enabled()) {
     throw new \moodle_exception('plugindisabled', 'auth_saml2');
 }
+
+$PAGE->set_url(new moodle_url('/auth/saml2/test.php'));
+$PAGE->set_course($SITE);
 
 $idp = optional_param('idp', '', PARAM_TEXT);
 $logout = optional_param('logout', false, PARAM_BOOL);
@@ -50,34 +53,34 @@ if ($testtype === 'passive') {
 
 if (!empty($idp)) {
     $SESSION->saml2idp = $idp;
-    echo "<p>Setting IdP via param</p>";
 }
 
 if (empty($SESSION->saml2idp)) {
     // Specify the default IdP to use.
     $SESSION->saml2idp = reset($saml2auth->metadataentities)->md5entityid;
-    echo '<p>Setting IdP to default</p>';
 }
 
 if (!empty($logout)) {
     $SESSION->saml2idp = $idplogout;
 }
 
-echo '<p>SP name: ' . $saml2auth->spname;
-echo '<p>Which IdP will be used? ' . s($SESSION->saml2idp);
-
 $auth = new SimpleSAML\Auth\Simple($saml2auth->spname);
-
-foreach ($saml2auth->metadataentities as $idpentity) {
-    echo '<hr>';
-    echo "<h4>IDP: $idpentity->entityid</h4>";
-    echo "<p>md5: $idpentity->md5entityid</p>";
-    echo "<p>check: " . md5($idpentity->entityid) . "</p>";
-}
 
 if ($logout) {
     $url = new moodle_url('/auth/saml2/test.php');
     $auth->logout(['ReturnTo' => $url->out(false)]);
+}
+
+echo $OUTPUT->header();
+
+echo \auth_saml2\output\diagnostic::paragraph('SP name: ', (string) $saml2auth->spname);
+echo \auth_saml2\output\diagnostic::paragraph('Which IdP will be used? ', (string) $SESSION->saml2idp);
+
+foreach ($saml2auth->metadataentities as $idpentity) {
+    echo \html_writer::empty_tag('hr');
+    echo \auth_saml2\output\diagnostic::heading('IDP: ', (string) $idpentity->entityid);
+    echo \auth_saml2\output\diagnostic::paragraph('md5: ', (string) $idpentity->md5entityid);
+    echo \auth_saml2\output\diagnostic::paragraph('check: ', md5($idpentity->entityid));
 }
 
 if (!$auth->isAuthenticated() && $passive) {
@@ -92,17 +95,25 @@ if (!$auth->isAuthenticated() && $passive) {
         'KeepPost' => false,
     ]);
 } else if (!$auth->isAuthenticated()) {
-    echo '<p>You are not logged in: <a href="?login=true">Login</a> | <a href="?passive=true">isPassive test</a></p>';
+    $loginurl = new moodle_url('/auth/saml2/test.php', ['login' => true]);
+    $passiveurl = new moodle_url('/auth/saml2/test.php', ['passive' => true]);
+    $links = \html_writer::link($loginurl, 'Login') . ' | ' . \html_writer::link($passiveurl, 'isPassive test');
+    echo \html_writer::tag('p', 'You are not logged in: ' . $links);
     if ($passivefail) {
         $state = \SimpleSAML\Auth\State::loadExceptionState();
         $exception = $state[\SimpleSAML\Auth\State::EXCEPTION_DATA];
-        echo "Passive test failed with error: " . $exception->getMessage();
+        echo \auth_saml2\output\diagnostic::paragraph('Passive test failed with error: ', $exception->getMessage());
     }
 } else {
-    echo '<hr>';
-    echo 'Authed with IdP ' . $auth->getAuthData('saml:sp:IdP');
-    echo '<pre>';
-    echo json_encode($auth->getAttributes(), JSON_PRETTY_PRINT);
-    echo '</pre>';
-    echo '<p>You are logged in: <a href="?logout=true&idplogout=' . md5($auth->getAuthData('saml:sp:IdP')) . '">Logout</a></p>';
+    echo \html_writer::empty_tag('hr');
+    $authenticatedidp = (string) $auth->getAuthData('saml:sp:IdP');
+    echo \auth_saml2\output\diagnostic::paragraph('Authed with IdP ', $authenticatedidp);
+    echo \auth_saml2\output\diagnostic::json($auth->getAttributes());
+    $logouturl = new moodle_url('/auth/saml2/test.php', [
+        'logout' => true,
+        'idplogout' => md5($authenticatedidp),
+    ]);
+    echo \html_writer::tag('p', 'You are logged in: ' . \html_writer::link($logouturl, 'Logout'));
 }
+
+echo $OUTPUT->footer();
