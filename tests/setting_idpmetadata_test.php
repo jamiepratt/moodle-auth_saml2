@@ -36,7 +36,9 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     private static $config;
 
     protected function setUp(): void {
+        global $CFG;
         parent::setUp();
+        @unlink($CFG->dataroot . '/saml2/metadata.pending.json');
         self::$config = new setting_idpmetadata();
     }
 
@@ -92,6 +94,89 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertFileExists($file);
         $actual = file_get_contents($file);
         self::assertSame(trim($xml), $actual, "Invalid saved XML contents for: {$file}");
+    }
+
+    public function test_it_does_not_activate_a_changed_signing_key_before_approval(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+        $livehash = hash_file('sha256', $file);
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'differentSigningCertificate=', $xml);
+
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($changed)
+        );
+        self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($livehash, hash_file('sha256', $file));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('approval_authorities')]
+    public function test_authorised_owner_can_approve_and_activate_a_staged_rollover(string $authority): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $admin = get_admin();
+        $this->setUser($admin);
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::$config->write_setting($xml);
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'approvedSigningCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($changed)
+        );
+        $manager = new metadata_trust_manager();
+        $pendingfingerprint = $manager->get_pending_summary()['proposedfingerprint'];
+
+        $sink = $this->redirectEvents();
+        self::$config->approve_pending($admin->id, $authority);
+        $events = $sink->get_events();
+        $sink->close();
+
+        self::assertSame(trim($changed), get_config('auth_saml2', 'idpmetadata'));
+        $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+        self::assertSame(trim($changed), file_get_contents($file));
+        self::assertFalse($manager->has_pending());
+        $approved = json_decode(get_config('auth_saml2', 'metadataapproved'), true);
+        self::assertSame($pendingfingerprint, $approved['fingerprint']);
+        self::assertCount(1, $events);
+        self::assertInstanceOf(event\metadata_change_approved::class, $events[0]);
+        self::assertSame($authority, $events[0]->other['authority']);
+    }
+
+    /**
+     * Approval authorities that may activate staged metadata.
+     *
+     * @return array
+     */
+    public static function approval_authorities(): array {
+        return [
+            'service owner' => [metadata_trust_manager::AUTHORITY_OWNER],
+            'emergency delegate' => [metadata_trust_manager::AUTHORITY_DELEGATE],
+        ];
+    }
+
+    public function test_invalid_approval_authority_cannot_activate_staged_metadata(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::$config->write_setting($xml);
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'unapprovedSigningCertificate=', $xml);
+        self::$config->validate($changed);
+        $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+
+        try {
+            self::$config->approve_pending(get_admin()->id, 'unauthorised');
+            self::fail('Invalid authority must be rejected.');
+        } catch (\invalid_parameter_exception $exception) {
+            self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
+            self::assertSame(trim($xml), file_get_contents($file));
+            self::assertTrue((new metadata_trust_manager())->has_pending());
+        }
     }
 
     public function test_it_saves_all_idps_information_from_single_xml(): void {
@@ -152,16 +237,29 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         $this->validate_idp_data_array($data);
     }
 
+    public function test_it_rejects_http_metadata_before_downloading(): void {
+        $this->resetAfterTest();
+        $downloaded = false;
+        $config = new setting_idpmetadata(static function (string $url) use (&$downloaded): string {
+            $downloaded = true;
+            return '';
+        });
+
+        $error = $config->validate('http://idp.example.test/metadata');
+
+        self::assertSame(get_string('idpmetadata_httpsrequired', 'auth_saml2'), $error);
+        self::assertFalse($downloaded);
+    }
+
     public function test_it_returns_error_if_metadata_url_is_not_valid(): void {
-        $error = self::$config->validate('http://invalid.url.metadata.test');
-        self::assertDebuggingCalled();
+        $error = self::$config->validate('https://invalid.url.metadata.test');
         if (method_exists($this, 'assertStringContainsString')) {
-            self::assertStringContainsString('Invalid metadata', $error);
-            self::assertStringContainsString('http://invalid.url.metadata.test', $error);
+            self::assertStringContainsString('Metadata fetch failed', $error);
+            self::assertStringContainsString('invalid.url.metadata.test', $error);
         } else {
             // Maintains Support for Moodle 3.5 - remove when this branch does not support Moodle 3.5 anymore.
-            self::assertContains('Invalid metadata', $error);
-            self::assertContains('http://invalid.url.metadata.test', $error);
+            self::assertContains('Metadata fetch failed', $error);
+            self::assertContains('invalid.url.metadata.test', $error);
         }
     }
 

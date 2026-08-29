@@ -25,6 +25,7 @@
 use auth_saml2\admin\saml2_settings;
 use auth_saml2\admin\setting_button;
 use auth_saml2\admin\setting_textonly;
+use auth_saml2\metadata_trust_manager;
 use auth_saml2\ssl_algorithms;
 use auth_saml2\user_fields;
 
@@ -51,6 +52,16 @@ if ($ADMIN->fulltree) {
     $idpmetadata = new \auth_saml2\admin\setting_idpmetadata();
     $idpmetadata->set_updatedcallback('auth_saml2_update_idp_metadata');
     $settings->add($idpmetadata);
+
+    if ((new metadata_trust_manager())->has_pending()) {
+        $settings->add(new setting_button(
+            'auth_saml2/metadataapproval',
+            get_string('metadataapproval', 'auth_saml2'),
+            get_string('metadataapproval_help', 'auth_saml2'),
+            get_string('metadataapprovalreview', 'auth_saml2'),
+            $CFG->wwwroot . '/auth/saml2/metadata_approval.php'
+        ));
+    }
 
     // IDP name.
     $settings->add(new admin_setting_configtext(

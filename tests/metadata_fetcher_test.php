@@ -26,6 +26,16 @@ namespace auth_saml2;
  */
 #[\PHPUnit\Framework\Attributes\CoversClass(metadata_fetcher::class)]
 final class metadata_fetcher_test extends \advanced_testcase {
+    public function test_fetch_rejects_http_before_network_access(): void {
+        $curl = $this->createMock(\curl::class);
+        $curl->expects($this->never())->method('get');
+
+        $this->expectException(\moodle_exception::class);
+        $this->expectExceptionMessage(get_string('idpmetadata_httpsrequired', 'auth_saml2'));
+
+        (new metadata_fetcher())->fetch('http://idp.example.test/metadata', $curl);
+    }
+
     public function test_fetch_metadata_404(): void {
         $url = 'https://idp.test/missing-metadata.xml';
         $curl = $this->createMock(\curl::class);
@@ -62,8 +72,37 @@ final class metadata_fetcher_test extends \advanced_testcase {
         $this->assertEquals(200, (int) $fetcher->get_curlinfo()['http_code']);
     }
 
+    public function test_fetch_rejects_tls_certificate_verification_failure(): void {
+        $url = 'https://idp.test/metadata.xml';
+        $curl = $this->createMock(\curl::class);
+        $curl->method('get')->with($url, $this->isType('array'))->willReturn('certificate verify failed');
+        $curl->method('get_info')->willReturn([]);
+        $curl->method('get_errno')->willReturn(60); // CURLE_PEER_FAILED_VERIFICATION.
+
+        $this->expectException(\moodle_exception::class);
+        $this->expectExceptionMessage('Metadata fetch failed: certificate verify failed');
+
+        (new metadata_fetcher())->fetch($url, $curl);
+    }
+
+    public function test_fetch_rejects_a_redirect_that_finishes_on_http(): void {
+        $url = 'https://idp.test/metadata.xml';
+        $curl = $this->createMock(\curl::class);
+        $curl->method('get')->willReturn('<xml />');
+        $curl->method('get_info')->willReturn([
+            'http_code' => 200,
+            'url' => 'http://idp.test/metadata.xml',
+        ]);
+        $curl->method('get_errno')->willReturn(0);
+
+        $this->expectException(\moodle_exception::class);
+        $this->expectExceptionMessage(get_string('idpmetadata_httpsrequired', 'auth_saml2'));
+
+        (new metadata_fetcher())->fetch($url, $curl);
+    }
+
     public function test_fetch_metadata_curlerrorno(): void {
-        $url = 'http://fakeurl.localhost';
+        $url = 'https://fakeurl.localhost';
         $curl = $this->createMock(\curl::class);
 
         $fetcher = new metadata_fetcher();
@@ -88,7 +127,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
     }
 
     public function test_fetch_metadata_nohttpstatus(): void {
-        $url = 'http://fakeurl.localhost';
+        $url = 'https://fakeurl.localhost';
         $curl = $this->createMock(\curl::class);
 
         $fetcher = new metadata_fetcher();
@@ -110,14 +149,16 @@ final class metadata_fetcher_test extends \advanced_testcase {
         }
     }
 
-    public function test_fetch_metadata_override_ssl_options(): void {
+    public function test_fetch_ignores_configuration_that_disables_tls_verification(): void {
         global $CFG;
 
         $this->resetAfterTest(true);
 
         $options = [
-            'CURLOPT_SSL_VERIFYPEER' => false,
-            'CURLOPT_SSL_VERIFYHOST' => false,
+            'CURLOPT_SSL_VERIFYPEER' => true,
+            'CURLOPT_SSL_VERIFYHOST' => 2,
+            'CURLOPT_PROTOCOLS' => CURLPROTO_HTTPS,
+            'CURLOPT_REDIR_PROTOCOLS' => CURLPROTO_HTTPS,
             'CURLOPT_CONNECTTIMEOUT' => 20,
             'CURLOPT_FOLLOWLOCATION' => 1,
             'CURLOPT_MAXREDIRS'      => 5,

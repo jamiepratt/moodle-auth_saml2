@@ -60,12 +60,18 @@ class metadata_fetcher {
      * @throws \moodle_exception
      */
     public function fetch($url, $curl = null) {
+        if (strtolower((string) parse_url($url, PHP_URL_SCHEME)) !== 'https') {
+            throw new \moodle_exception('idpmetadata_httpsrequired', 'auth_saml2');
+        }
+
         if (!$curl instanceof \curl) {
             $curl = new \curl();
         }
         $options = [
             'CURLOPT_SSL_VERIFYPEER' => true,
-            'CURLOPT_SSL_VERIFYHOST' => true,
+            'CURLOPT_SSL_VERIFYHOST' => 2,
+            'CURLOPT_PROTOCOLS' => CURLPROTO_HTTPS,
+            'CURLOPT_REDIR_PROTOCOLS' => CURLPROTO_HTTPS,
             'CURLOPT_CONNECTTIMEOUT' => 20,
             'CURLOPT_FOLLOWLOCATION' => 1,
             'CURLOPT_MAXREDIRS'      => 5,
@@ -73,14 +79,6 @@ class metadata_fetcher {
             'CURLOPT_RETURNTRANSFER' => true,
             'CURLOPT_NOBODY'         => false,
         ];
-        $verifypeeroverride = get_config('auth_saml2', 'CURLOPT_SSL_VERIFYPEER');
-        if ($verifypeeroverride === '0') {
-            $options['CURLOPT_SSL_VERIFYPEER'] = false;
-        }
-        $verifyhostoverride = get_config('auth_saml2', 'CURLOPT_SSL_VERIFYHOST');
-        if ($verifyhostoverride === '0') {
-            $options['CURLOPT_SSL_VERIFYHOST'] = false;
-        }
         $xml = $curl->get($url, $options);
         $this->curlinfo = $curl->get_info();
         $this->curlerrorno = $curl->get_errno();
@@ -89,6 +87,12 @@ class metadata_fetcher {
         if (!empty($this->curlerrorno)) {
             $this->curlerror = $xml;
             throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', $xml);
+        }
+        if (
+            !empty($this->curlinfo['url']) &&
+                strtolower((string) parse_url($this->curlinfo['url'], PHP_URL_SCHEME)) !== 'https'
+        ) {
+            throw new \moodle_exception('idpmetadata_httpsrequired', 'auth_saml2');
         }
         // If http status code is empty something is wrong.
         if (empty($this->curlinfo['http_code'])) {
