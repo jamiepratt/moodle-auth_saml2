@@ -17,6 +17,7 @@ Feature: SAML2 flagged accounts login
     Then I should see "Log in"
     And I should see "You are logged in to your identity provider however, this account has limited access to Moodle, please contact your administrator for more details."
 
+  @external
   Scenario: If my account is blocked and redirect page is set, on SAML2 login I should see the redirect page
     Given the authentication plugin saml2 is enabled                                              # auth_saml2
     And the mock SAML IdP is configured                                                           # auth_saml2
