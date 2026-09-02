@@ -22,3 +22,10 @@ Feature: Manual SAML metadata approval
     When I request SAML metadata activation without a session key              # auth_saml2
     Then I should see "Your session has most likely timed out"
     And the SAML metadata change should remain pending and inactive            # auth_saml2
+
+  Scenario: An administrator can activate the exact reviewed proposal
+    When I go to the SAML metadata approval page                               # auth_saml2
+    And I set the field "I confirm that the IdP change was verified through a separate trusted channel." to "1"
+    And I press "Approve and activate"
+    Then I should see "The staged IdP metadata was approved and activated."
+    And the SAML metadata change should be active                              # auth_saml2

@@ -386,6 +386,26 @@ EOF;
     }
 
     /**
+     * Assert that approval consumed the proposal and replaced active metadata.
+     *
+     * @Then /^the SAML metadata change should be active +\# auth_saml2$/
+     */
+    public function the_saml_metadata_change_should_be_active(): void {
+        global $DB;
+
+        $active = (string) $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'auth_saml2',
+            'name' => 'idpmetadata',
+        ]);
+        if (
+            (new \auth_saml2\metadata_trust_manager())->has_pending() ||
+            hash_equals($this->activemetadatafingerprint, hash('sha256', $active))
+        ) {
+            throw new ExpectationException('The reviewed metadata proposal was not activated.', $this->getSession());
+        }
+    }
+
+    /**
      * Confirms a user's login from the IdP, and returns information back to Moodle.
      *
      * This step must be used while at the mock IdP 'login' screen.

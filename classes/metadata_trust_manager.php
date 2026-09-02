@@ -93,7 +93,7 @@ class metadata_trust_manager {
      * @return bool
      */
     public function has_pending(): bool {
-        return is_readable($this->pending_path());
+        return file_exists($this->pending_path());
     }
 
     /**
@@ -104,6 +104,35 @@ class metadata_trust_manager {
      * @return string One of the review constants.
      */
     public function review(string $configvalue, array $idps): string {
+        return $this->with_lock(fn(): string => $this->review_locked($configvalue, $idps));
+    }
+
+    /**
+     * Review and apply unchanged or initial metadata under one trust-state lock.
+     *
+     * @param string $configvalue Proposed configuration value.
+     * @param idp_data[] $idps Proposed metadata sources.
+     * @param callable $activate Activation callback for an accepted proposal.
+     * @return string One of the review constants.
+     */
+    public function review_and_apply(string $configvalue, array $idps, callable $activate): string {
+        return $this->with_lock(function () use ($configvalue, $idps, $activate): string {
+            $result = $this->review_locked($configvalue, $idps);
+            if ($result === self::UNCHANGED) {
+                $activate();
+            }
+            return $result;
+        });
+    }
+
+    /**
+     * Compare metadata while holding the trust-state lock.
+     *
+     * @param string $configvalue Proposed configuration value.
+     * @param idp_data[] $idps Proposed metadata sources.
+     * @return string One of the review constants.
+     */
+    private function review_locked(string $configvalue, array $idps): string {
         $approved = json_decode((string) get_config('auth_saml2', self::APPROVED_CONFIG), true);
         $proposed = $this->describe($idps);
         if (!is_array($approved)) {
@@ -121,18 +150,20 @@ class metadata_trust_manager {
 
         $summary = $this->difference_summary(is_array($approved) ? $approved : [], $proposed);
         $currentpending = $this->read_pending();
+        $idppayload = array_map(static function (idp_data $idp): array {
+            return [
+                'name' => $idp->idpname,
+                'url' => $idp->idpurl,
+                'icon' => $idp->idpicon,
+                'xml' => $idp->get_rawxml(),
+            ];
+        }, $idps);
         $payload = [
             'configvalue' => $configvalue,
             'configfingerprint' => hash('sha256', $configvalue),
-            'idps' => array_map(static function (idp_data $idp): array {
-                return [
-                    'name' => $idp->idpname,
-                    'url' => $idp->idpurl,
-                    'icon' => $idp->idpicon,
-                    'xml' => $idp->get_rawxml(),
-                ];
-            }, $idps),
+            'idps' => $idppayload,
             'descriptor' => $proposed,
+            'proposalfingerprint' => $this->proposal_fingerprint($configvalue, $idppayload, $proposed),
             'summary' => $summary,
             'detectedat' => time(),
         ];
@@ -158,7 +189,32 @@ class metadata_trust_manager {
      * @return array|null
      */
     public function get_pending_summary(): ?array {
-        return $this->read_pending()['summary'] ?? null;
+        return $this->has_pending() ? $this->get_pending_review()['summary'] : null;
+    }
+
+    /**
+     * Return the cryptographic identity of the exact staged proposal.
+     *
+     * @return string
+     */
+    public function get_pending_fingerprint(): string {
+        return $this->get_pending_review()['proposalfingerprint'];
+    }
+
+    /**
+     * Return the summary and exact form fingerprint from one locked proposal read.
+     *
+     * @return array{summary: array, proposalfingerprint: string}
+     */
+    public function get_pending_review(): array {
+        return $this->with_lock(function (): array {
+            $pending = $this->get_pending_data();
+            $approved = json_decode((string) get_config('auth_saml2', self::APPROVED_CONFIG), true);
+            return [
+                'summary' => $this->difference_summary(is_array($approved) ? $approved : [], $pending['descriptor']),
+                'proposalfingerprint' => $pending['proposalfingerprint'],
+            ];
+        });
     }
 
     /**
@@ -166,14 +222,15 @@ class metadata_trust_manager {
      *
      * @return array
      */
-    public function get_pending_data(): array {
+    public function get_pending_data(?string $expectedfingerprint = null): array {
         $payload = $this->read_pending();
         if (
             !$payload || !isset(
                 $payload['configvalue'],
                 $payload['configfingerprint'],
                 $payload['idps'],
-                $payload['descriptor']
+                $payload['descriptor'],
+                $payload['proposalfingerprint']
             )
         ) {
             throw new \moodle_exception('idpmetadata_nopending', 'auth_saml2');
@@ -192,12 +249,41 @@ class metadata_trust_manager {
         if (!hash_equals($payload['descriptor']['fingerprint'] ?? '', $actual['fingerprint'])) {
             throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
         }
+        $actualproposal = $this->proposal_fingerprint($payload['configvalue'], $payload['idps'], $actual);
+        if (!hash_equals($payload['proposalfingerprint'], $actualproposal)) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        if ($expectedfingerprint !== null && !hash_equals($actualproposal, $expectedfingerprint)) {
+            throw new \moodle_exception('metadataapprovalproposalchanged', 'auth_saml2');
+        }
 
         return [
             'configvalue' => $payload['configvalue'],
             'idps' => $idps,
             'descriptor' => $actual,
+            'proposalfingerprint' => $actualproposal,
         ];
+    }
+
+    /**
+     * Execute an operation while serialising metadata review and activation.
+     *
+     * @param callable $operation Operation to execute.
+     * @return mixed Operation result.
+     */
+    public function with_lock(callable $operation): mixed {
+        $factory = \core\lock\lock_config::get_lock_factory('auth_saml2');
+        $lock = $factory->get_lock('metadata-trust', 10, 300);
+        if ($lock === false) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+        try {
+            return $operation();
+        } finally {
+            if (!$lock->release()) {
+                debugging('The SAML metadata trust lock could not be released.', DEBUG_DEVELOPER);
+            }
+        }
     }
 
     /**
@@ -207,8 +293,10 @@ class metadata_trust_manager {
      * @param string $authority Owner or emergency delegate.
      */
     public function commit_pending(int $userid, string $authority): void {
-        $this->record_pending_approval($userid, $authority);
-        $this->clear_pending();
+        $fingerprint = $this->get_pending_fingerprint();
+        $this->activate_pending($fingerprint, function (array $pending) use ($userid, $authority): void {
+            $this->record_approval($pending, $userid, $authority);
+        });
     }
 
     /**
@@ -218,10 +306,22 @@ class metadata_trust_manager {
      * @param string $authority Owner or emergency delegate.
      */
     public function record_pending_approval(int $userid, string $authority): void {
+        $this->record_approval($this->get_pending_data(), $userid, $authority);
+    }
+
+    /**
+     * Record approval for a verified staged proposal.
+     *
+     * @param array $pending Verified proposal.
+     * @param int $userid Approver user ID.
+     * @param string $authority Owner or emergency delegate.
+     */
+    public function record_approval(array $pending, int $userid, string $authority): void {
         $this->validate_authority($authority);
-        $pending = $this->get_pending_data();
         $old = json_decode((string) get_config('auth_saml2', self::APPROVED_CONFIG), true);
-        set_config(self::APPROVED_CONFIG, json_encode($pending['descriptor']), 'auth_saml2');
+        if (!set_config(self::APPROVED_CONFIG, json_encode($pending['descriptor']), 'auth_saml2')) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
         event\metadata_change_approved::create([
             'userid' => $userid,
             'other' => [
@@ -237,9 +337,50 @@ class metadata_trust_manager {
      * Remove the staged proposal after activation commits.
      */
     public function clear_pending(): void {
-        if ($this->has_pending() && !unlink($this->pending_path())) {
+        if ($this->has_pending() && !$this->delete_file($this->pending_path())) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
+    }
+
+    /**
+     * Consume a verified proposal before activation and clean it up after success.
+     *
+     * @param string $expectedfingerprint Cryptographic identity shown during review.
+     * @param callable $activate Activation callback receiving the verified proposal.
+     */
+    public function activate_pending(string $expectedfingerprint, callable $activate): void {
+        $this->with_lock(function () use ($expectedfingerprint, $activate): void {
+            $pending = $this->get_pending_data($expectedfingerprint);
+            $pendingpath = $this->pending_path();
+            $activatingpath = $pendingpath . '.activating';
+            if (file_exists($activatingpath) && !$this->delete_file($activatingpath)) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+            if (!rename($pendingpath, $activatingpath)) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+            try {
+                $activate($pending);
+            } catch (\Throwable $exception) {
+                if (!rename($activatingpath, $pendingpath)) {
+                    throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+                }
+                throw $exception;
+            }
+            if (!$this->delete_file($activatingpath)) {
+                debugging('The consumed SAML metadata proposal could not be removed.', DEBUG_DEVELOPER);
+            }
+        });
+    }
+
+    /**
+     * Delete a metadata state file.
+     *
+     * @param string $path File to delete.
+     * @return bool
+     */
+    protected function delete_file(string $path): bool {
+        return !file_exists($path) || unlink($path);
     }
 
     /**
@@ -248,8 +389,11 @@ class metadata_trust_manager {
      * @param idp_data[] $idps Activated metadata.
      */
     public function approve_initial(array $idps): void {
-        if (get_config('auth_saml2', self::APPROVED_CONFIG) === false) {
-            set_config(self::APPROVED_CONFIG, json_encode($this->describe($idps)), 'auth_saml2');
+        if (
+            get_config('auth_saml2', self::APPROVED_CONFIG) === false &&
+            !set_config(self::APPROVED_CONFIG, json_encode($this->describe($idps)), 'auth_saml2')
+        ) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
     }
 
@@ -360,6 +504,22 @@ class metadata_trust_manager {
     }
 
     /**
+     * Hash the exact configuration and resolved metadata presented for approval.
+     *
+     * @param string $configvalue Proposed setting value.
+     * @param array $idps Serialized resolved metadata sources.
+     * @param array $descriptor Security descriptor.
+     * @return string
+     */
+    private function proposal_fingerprint(string $configvalue, array $idps, array $descriptor): string {
+        $encoded = json_encode([$configvalue, $idps, $descriptor], JSON_UNESCAPED_SLASHES);
+        if ($encoded === false) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+        return hash('sha256', $encoded);
+    }
+
+    /**
      * Collect and sort descriptor values.
      *
      * @param array $sources Descriptor sources.
@@ -386,8 +546,15 @@ class metadata_trust_manager {
         if (!$this->has_pending()) {
             return null;
         }
-        $payload = json_decode((string) file_get_contents($this->pending_path()), true);
-        return is_array($payload) ? $payload : null;
+        $contents = file_get_contents($this->pending_path());
+        if ($contents === false) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+        $payload = json_decode($contents, true);
+        if (!is_array($payload)) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        return $payload;
     }
 
     /**
@@ -396,19 +563,73 @@ class metadata_trust_manager {
      * @param array $payload Pending bundle.
      */
     private function write_pending(array $payload): void {
-        global $CFG;
-
         $path = $this->pending_path();
-        make_writable_directory(dirname($path));
+        $directory = dirname($path);
+        if (!make_writable_directory($directory) || !is_dir($directory) || !is_writable($directory)) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
         $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES);
         if ($encoded === false) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
-        $written = file_put_contents($path, $encoded, LOCK_EX);
-        if ($written === false) {
+        $temporary = tempnam($directory, '.metadata-pending-');
+        if ($temporary === false) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
-        chmod($path, $CFG->filepermissions);
+        $written = file_put_contents($temporary, $encoded, LOCK_EX);
+        if (
+            $written !== strlen($encoded) ||
+            !$this->make_runtime_private($temporary, $directory) ||
+            !rename($temporary, $path)
+        ) {
+            if (file_exists($temporary) && !unlink($temporary)) {
+                debugging('A failed SAML pending metadata temporary file could not be removed.', DEBUG_DEVELOPER);
+            }
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+    }
+
+    /**
+     * Restrict a file to the runtime account that owns Moodle data.
+     *
+     * Root-run cron and test commands adopt the nearest non-root data-directory owner so the web runtime can read it.
+     *
+     * @param string $path File to secure.
+     * @param string $directory Storage directory.
+     * @return bool
+     */
+    private function make_runtime_private(string $path, string $directory): bool {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $owner = $this->find_runtime_owner($directory);
+            if ($owner === false || ($owner !== 0 && !chown($path, $owner))) {
+                return false;
+            }
+        }
+        return chmod($path, 0600);
+    }
+
+    /**
+     * Find the data owner that a privileged maintenance process should adopt.
+     *
+     * @param string $directory Starting directory.
+     * @return int|false
+     */
+    private function find_runtime_owner(string $directory): int|false {
+        $current = $directory;
+        while (true) {
+            $owner = fileowner($current);
+            if ($owner === false) {
+                return false;
+            }
+            if ($owner !== 0) {
+                return $owner;
+            }
+            $parent = dirname($current);
+            if ($parent === $current) {
+                return 0;
+            }
+            $current = $parent;
+        }
     }
 
     /**

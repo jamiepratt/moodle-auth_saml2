@@ -155,6 +155,7 @@ $string['metadataapprovalconfirmationrequired'] = 'Out-of-band IdP confirmation 
 $string['metadataapprovaldelegate'] = 'Emergency delegate';
 $string['metadataapprovaloutofband'] = 'I confirm that the IdP change was verified through a separate trusted channel.';
 $string['metadataapprovalowner'] = 'Moodle SAML service owner';
+$string['metadataapprovalproposalchanged'] = 'The staged proposal changed after review. Review the current proposal before activation.';
 $string['metadataapprovalreview'] = 'Review staged change';
 $string['metadataapprovalsuccess'] = 'The staged IdP metadata was approved and activated.';
 $string['metadataapprovalsummary'] = 'Signing keys changed: {$a->signingkeys}. Security endpoints changed: {$a->endpoints}. Entity IDs changed: {$a->entities}. Metadata sources changed: {$a->sources}.';

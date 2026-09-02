@@ -105,8 +105,8 @@ class metadata_refresh extends \core\task\scheduled_task {
             $this->idpmetadata = new setting_idpmetadata();
         }
 
-        $result = $this->idpmetadata->validate($config->idpmetadata);
-        if ($result !== true) {
+        $result = $this->idpmetadata->write_setting($config->idpmetadata);
+        if ($result !== '') {
             mtrace($result);
             return false;
         }

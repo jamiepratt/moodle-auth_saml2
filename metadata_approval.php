@@ -53,7 +53,8 @@ if (optional_param('confirm', 0, PARAM_BOOL)) {
         );
     }
     $authority = required_param('authority', PARAM_ALPHA);
-    (new setting_idpmetadata())->approve_pending($USER->id, $authority, true);
+    $expectedfingerprint = required_param('proposalfingerprint', PARAM_ALPHANUM);
+    (new setting_idpmetadata())->approve_pending($USER->id, $authority, true, $expectedfingerprint);
     redirect($settingsurl, get_string('metadataapprovalsuccess', 'auth_saml2'));
 }
 
@@ -65,7 +66,8 @@ if (!$manager->has_pending()) {
     exit;
 }
 
-$summary = $manager->get_pending_summary();
+$review = $manager->get_pending_review();
+$summary = $review['summary'];
 echo $OUTPUT->notification(get_string('metadataapprovalwarning', 'auth_saml2'), 'warning');
 echo html_writer::tag('p', get_string('metadataapprovalsummary', 'auth_saml2', (object) [
     'signingkeys' => $summary['signingkeys'] ? get_string('yes') : get_string('no'),
@@ -77,6 +79,11 @@ echo html_writer::tag('p', get_string('metadataapprovalsummary', 'auth_saml2', (
 echo html_writer::start_tag('form', ['method' => 'post', 'action' => $url]);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'confirm', 'value' => 1]);
+echo html_writer::empty_tag('input', [
+    'type' => 'hidden',
+    'name' => 'proposalfingerprint',
+    'value' => $review['proposalfingerprint'],
+]);
 echo html_writer::label(get_string('metadataapprovalauthority', 'auth_saml2'), 'id_authority');
 echo html_writer::select([
     metadata_trust_manager::AUTHORITY_OWNER => get_string('metadataapprovalowner', 'auth_saml2'),

@@ -104,6 +104,81 @@ final class metadata_trust_manager_test extends \advanced_testcase {
         self::assertInstanceOf(event\metadata_change_detected::class, $events[0]);
     }
 
+    public function test_pending_proposal_is_readable_only_by_its_activation_owner(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'restrictedSigningCertificate=', $xml);
+
+        self::assertSame(
+            metadata_trust_manager::PENDING,
+            $manager->review($changed, (new idp_parser())->parse($changed))
+        );
+
+        $path = $CFG->dataroot . '/saml2/metadata.pending.json';
+        clearstatcache(true, $path);
+        self::assertSame(0600, fileperms($path) & 0777);
+    }
+
+    public function test_pending_review_binds_the_summary_and_form_fingerprint_to_one_proposal(): void {
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'reviewBundleCertificate=', $xml);
+        self::assertSame(
+            metadata_trust_manager::PENDING,
+            $manager->review($changed, (new idp_parser())->parse($changed))
+        );
+
+        $review = $manager->get_pending_review();
+
+        self::assertTrue($review['summary']['signingkeys']);
+        self::assertSame($manager->get_pending_fingerprint(), $review['proposalfingerprint']);
+        self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $review['proposalfingerprint']);
+    }
+
+    public function test_cleanup_failure_after_success_does_not_report_activation_failure_or_leave_pending_state(): void {
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new class extends metadata_trust_manager {
+            /**
+             * Simulate a post-activation cleanup failure.
+             *
+             * @param string $path File to delete.
+             * @return bool
+             */
+            protected function delete_file(string $path): bool {
+                if (str_ends_with($path, '.activating')) {
+                    return false;
+                }
+                return parent::delete_file($path);
+            }
+        };
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'cleanupFailureCertificate=', $xml);
+        self::assertSame(
+            metadata_trust_manager::PENDING,
+            $manager->review($changed, (new idp_parser())->parse($changed))
+        );
+        $fingerprint = $manager->get_pending_fingerprint();
+        $activated = false;
+
+        $manager->activate_pending($fingerprint, static function () use (&$activated): void {
+            $activated = true;
+        });
+
+        $this->assertDebuggingCalled('The consumed SAML metadata proposal could not be removed.');
+        self::assertTrue($activated);
+        self::assertFalse($manager->has_pending());
+    }
+
     public function test_security_endpoint_change_is_staged(): void {
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
