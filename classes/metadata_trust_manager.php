@@ -112,7 +112,6 @@ class metadata_trust_manager {
                 return $carry && $idp->idpurl === 'xml';
             }, true);
             if ($currentvalue === '' || ($inline && $currentvalue === trim($configvalue))) {
-                set_config(self::APPROVED_CONFIG, json_encode($proposed), 'auth_saml2');
                 return self::UNCHANGED;
             }
         }
@@ -208,6 +207,17 @@ class metadata_trust_manager {
      * @param string $authority Owner or emergency delegate.
      */
     public function commit_pending(int $userid, string $authority): void {
+        $this->record_pending_approval($userid, $authority);
+        $this->clear_pending();
+    }
+
+    /**
+     * Record approval while the caller's activation transaction is still open.
+     *
+     * @param int $userid Approver user ID.
+     * @param string $authority Owner or emergency delegate.
+     */
+    public function record_pending_approval(int $userid, string $authority): void {
         $this->validate_authority($authority);
         $pending = $this->get_pending_data();
         $old = json_decode((string) get_config('auth_saml2', self::APPROVED_CONFIG), true);
@@ -221,7 +231,26 @@ class metadata_trust_manager {
                 'outofbandconfirmed' => 1,
             ],
         ])->trigger();
-        unlink($this->pending_path());
+    }
+
+    /**
+     * Remove the staged proposal after activation commits.
+     */
+    public function clear_pending(): void {
+        if ($this->has_pending() && !unlink($this->pending_path())) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+    }
+
+    /**
+     * Record a first approved descriptor only after its activation succeeds.
+     *
+     * @param idp_data[] $idps Activated metadata.
+     */
+    public function approve_initial(array $idps): void {
+        if (get_config('auth_saml2', self::APPROVED_CONFIG) === false) {
+            set_config(self::APPROVED_CONFIG, json_encode($this->describe($idps)), 'auth_saml2');
+        }
     }
 
     /**
@@ -246,7 +275,7 @@ class metadata_trust_manager {
         foreach ($idps as $idp) {
             $document = new DOMDocument();
             if (!$document->loadXML($idp->get_rawxml(), LIBXML_NONET | LIBXML_PARSEHUGE)) {
-                throw new \invalid_argument_exception('Invalid IdP metadata XML.');
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
             }
             $xpath = new DOMXPath($document);
             $xpath->registerNamespace('md', 'urn:oasis:names:tc:SAML:2.0:metadata');
@@ -367,6 +396,8 @@ class metadata_trust_manager {
      * @param array $payload Pending bundle.
      */
     private function write_pending(array $payload): void {
+        global $CFG;
+
         $path = $this->pending_path();
         make_writable_directory(dirname($path));
         $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES);
@@ -377,7 +408,7 @@ class metadata_trust_manager {
         if ($written === false) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
-        chmod($path, 0600);
+        chmod($path, $CFG->filepermissions);
     }
 
     /**

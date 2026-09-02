@@ -420,5 +420,21 @@ function xmldb_auth_saml2_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026082900, 'auth', 'saml2');
     }
 
+    if ($oldversion < 2026090300) {
+        // Existing inline metadata remains the active trust baseline and never needs scheduled retrieval.
+        try {
+            $configvalue = (string) get_config('auth_saml2', 'idpmetadata');
+            if ($configvalue !== '' && (new \auth_saml2\idp_parser())->check_xml($configvalue)) {
+                (new \auth_saml2\metadata_trust_manager())->bootstrap_configured_inline();
+                set_config('idpmetadatarefresh', 0, 'auth_saml2');
+            }
+        } catch (\Throwable $exception) {
+            // An invalid legacy value must not block upgrade or change the active trust checkpoint.
+            mtrace('SAML metadata trust baseline was not seeded: ' . $exception->getMessage());
+        }
+
+        upgrade_plugin_savepoint(true, 2026090300, 'auth', 'saml2');
+    }
+
     return true;
 }

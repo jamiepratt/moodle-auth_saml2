@@ -45,6 +45,12 @@ class behat_auth_saml2 extends behat_base {
     /** @var string Last captured self-test response. */
     private string $lastselftestresponse = '';
 
+    /** @var string Last captured metadata approval response. */
+    private string $lastmetadataapprovalresponse = '';
+
+    /** @var string Fingerprint of metadata active before a staged change. */
+    private string $activemetadatafingerprint = '';
+
     /**
      * Confirms the Authentication plugin is enabled
      *
@@ -292,6 +298,90 @@ EOF;
         if (!$auth->is_configured()) {
             require_once(__DIR__ . '/../../setuplib.php');
             create_certificates($auth);
+        }
+    }
+
+    /**
+     * Stage a signing-key rollover without activating it.
+     *
+     * @Given /^a SAML signing key change is pending +\# auth_saml2$/
+     */
+    public function a_saml_signing_key_change_is_pending(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        $changed = preg_replace(
+            '/(<X509Certificate>)(.)/',
+            '$1Z',
+            $active,
+            1,
+            $replacements
+        );
+        if ($replacements !== 1 || !is_string($changed)) {
+            throw new ExpectationException('The active synthetic metadata has no signing certificate.', $this->getSession());
+        }
+        $this->activemetadatafingerprint = hash('sha256', $active);
+        $result = (new \auth_saml2\admin\setting_idpmetadata())->validate($changed);
+        if ($result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')) {
+            throw new ExpectationException('The synthetic signing-key change was not staged.', $this->getSession());
+        }
+    }
+
+    /**
+     * Visit the manual metadata approval page.
+     *
+     * @When /^I go to the SAML metadata approval page +\# auth_saml2$/
+     */
+    public function i_go_to_the_saml_metadata_approval_page(): void {
+        $this->getSession()->visit($this->locate_path('/auth/saml2/metadata_approval.php'));
+    }
+
+    /**
+     * Request the approval page without leaving Behat on an expected exception page.
+     *
+     * @When /^I request the SAML metadata approval page +\# auth_saml2$/
+     */
+    public function i_request_the_saml_metadata_approval_page(): void {
+        $this->getSession()->visit($this->locate_path('/auth/saml2/metadata_approval.php'));
+        $this->lastmetadataapprovalresponse = $this->getSession()->getPage()->getContent();
+        $this->getSession()->visit($this->locate_path('/'));
+    }
+
+    /**
+     * Assert text in the captured metadata approval response.
+     *
+     * @param string $expected Expected response text.
+     * @Then /^the SAML metadata approval response should contain "([^"]*)" +\# auth_saml2$/
+     */
+    public function the_saml_metadata_approval_response_should_contain(string $expected): void {
+        if (!str_contains($this->lastmetadataapprovalresponse, $expected)) {
+            throw new ExpectationException(
+                "The metadata approval response did not contain '{$expected}'.",
+                $this->getSession()
+            );
+        }
+    }
+
+    /**
+     * Attempt approval without a session key.
+     *
+     * @When /^I request SAML metadata activation without a session key +\# auth_saml2$/
+     */
+    public function i_request_saml_metadata_activation_without_a_session_key(): void {
+        $path = '/auth/saml2/metadata_approval.php?confirm=1&outofband=1&authority=serviceowner';
+        $this->getSession()->visit($this->locate_path($path));
+    }
+
+    /**
+     * Assert that failed approval did not replace active metadata.
+     *
+     * @Then /^the SAML metadata change should remain pending and inactive +\# auth_saml2$/
+     */
+    public function the_saml_metadata_change_should_remain_pending_and_inactive(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        if (
+            !(new \auth_saml2\metadata_trust_manager())->has_pending() ||
+            !hash_equals($this->activemetadatafingerprint, hash('sha256', $active))
+        ) {
+            throw new ExpectationException('The staged metadata was activated or discarded.', $this->getSession());
         }
     }
 

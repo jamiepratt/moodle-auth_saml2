@@ -40,12 +40,20 @@ $PAGE->set_heading(get_string('metadataapproval', 'auth_saml2'));
 
 $manager = new metadata_trust_manager();
 if (optional_param('confirm', 0, PARAM_BOOL)) {
-    require_sesskey();
+    $requestsesskey = optional_param('sesskey', '', PARAM_RAW);
+    if ($requestsesskey === '' || !confirm_sesskey($requestsesskey)) {
+        redirect($url, get_string('invalidsesskey', 'error'), null, \core\output\notification::NOTIFY_ERROR);
+    }
     if (!optional_param('outofband', 0, PARAM_BOOL)) {
-        throw new moodle_exception('metadataapprovalconfirmationrequired', 'auth_saml2');
+        redirect(
+            $url,
+            get_string('metadataapprovalconfirmationrequired', 'auth_saml2'),
+            null,
+            \core\output\notification::NOTIFY_ERROR
+        );
     }
     $authority = required_param('authority', PARAM_ALPHA);
-    (new setting_idpmetadata())->approve_pending($USER->id, $authority);
+    (new setting_idpmetadata())->approve_pending($USER->id, $authority, true);
     redirect($settingsurl, get_string('metadataapprovalsuccess', 'auth_saml2'));
 }
 

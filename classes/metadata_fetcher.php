@@ -79,7 +79,7 @@ class metadata_fetcher {
             'CURLOPT_RETURNTRANSFER' => true,
             'CURLOPT_NOBODY'         => false,
         ];
-        $xml = $curl->get($url, $options);
+        $xml = $curl->get($url, [], $options);
         $this->curlinfo = $curl->get_info();
         $this->curlerrorno = $curl->get_errno();
 

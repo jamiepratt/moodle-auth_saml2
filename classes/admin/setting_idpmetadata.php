@@ -42,13 +42,18 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     /** @var callable|null Metadata downloader override. */
     private $downloader;
 
+    /** @var callable|null Metadata writer override. */
+    private $writer;
+
     /**
      * Constructor.
      *
      * @param callable|null $downloader Metadata downloader override for controlled environments.
+     * @param callable|null $writer Metadata writer override for controlled environments.
      */
-    public function __construct(?callable $downloader = null) {
+    public function __construct(?callable $downloader = null, ?callable $writer = null) {
         $this->downloader = $downloader;
+        $this->writer = $writer;
 
         // All parameters are hardcoded because there can be only one instance:
         // When it validates, it saves extra configs, preventing this component from being reused as is.
@@ -78,10 +83,13 @@ class setting_idpmetadata extends admin_setting_configtextarea {
 
         try {
             $idps = $this->get_idps_data($value);
-            if ((new metadata_trust_manager())->review($value, $idps) === metadata_trust_manager::PENDING) {
+            $manager = new metadata_trust_manager();
+            if ($manager->review($value, $idps) === metadata_trust_manager::PENDING) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_pendingapproval', 'auth_saml2'));
             }
-            $this->process_all_idps_metadata($idps);
+            $this->activate_metadata($idps, static function () use ($manager, $idps): void {
+                $manager->approve_initial($idps);
+            });
         } catch (setting_idpmetadata_exception | \moodle_exception $exception) {
             return $exception->getMessage();
         }
@@ -94,14 +102,55 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      *
      * @param int $userid Approver user ID.
      * @param string $authority Owner or emergency delegate.
+     * @param bool $outofbandconfirmed Whether the proposal was confirmed through a trusted separate channel.
      */
-    public function approve_pending(int $userid, string $authority): void {
+    public function approve_pending(int $userid, string $authority, bool $outofbandconfirmed): void {
+        global $USER;
+
+        if (!$outofbandconfirmed) {
+            throw new \moodle_exception('metadataapprovalconfirmationrequired', 'auth_saml2');
+        }
+        if ((int) $USER->id !== $userid) {
+            throw new \invalid_parameter_exception('The SAML metadata approver must match the current user.');
+        }
+        require_capability('moodle/site:config', \context_system::instance());
+
         $manager = new metadata_trust_manager();
         $manager->validate_authority($authority);
         $pending = $manager->get_pending_data();
-        $this->process_all_idps_metadata($pending['idps']);
-        set_config('idpmetadata', $pending['configvalue'], 'auth_saml2');
-        $manager->commit_pending($userid, $authority);
+        $this->activate_metadata($pending['idps'], static function () use (
+            $manager,
+            $pending,
+            $userid,
+            $authority
+        ): void {
+            set_config('idpmetadata', $pending['configvalue'], 'auth_saml2');
+            $manager->record_pending_approval($userid, $authority);
+        });
+        $manager->clear_pending();
+    }
+
+    /**
+     * Atomically activate metadata across database records and live files.
+     *
+     * @param idp_data[] $idps
+     * @param callable|null $withtransaction Additional database-backed trust changes.
+     */
+    private function activate_metadata(array $idps, ?callable $withtransaction = null): void {
+        global $DB;
+
+        $files = $this->snapshot_metadata_files();
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            $this->process_all_idps_metadata($idps);
+            if ($withtransaction !== null) {
+                $withtransaction();
+            }
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            $this->restore_metadata_files($files);
+            $transaction->rollback($exception);
+        }
     }
 
     /**
@@ -332,8 +381,56 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         require_once("{$CFG->dirroot}/auth/saml2/setup.php");
 
         $file = $saml2auth->get_file_idp_metadata_file($url);
-        if (file_put_contents($file, $xml, LOCK_EX) === false) {
+        if ($this->writer !== null) {
+            ($this->writer)($file, $xml);
+            return;
+        }
+
+        $temporary = tempnam(dirname($file), '.metadata-');
+        if (
+            $temporary === false ||
+            file_put_contents($temporary, $xml, LOCK_EX) === false ||
+            !chmod($temporary, $CFG->filepermissions) ||
+            !rename($temporary, $file)
+        ) {
+            if (is_string($temporary) && file_exists($temporary)) {
+                unlink($temporary);
+            }
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+    }
+
+    /**
+     * Snapshot all live IdP metadata files.
+     *
+     * @return array
+     */
+    private function snapshot_metadata_files(): array {
+        global $CFG;
+
+        $files = [];
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            $files[$file] = file_get_contents($file);
+        }
+        return $files;
+    }
+
+    /**
+     * Restore all live IdP metadata files after an activation failure.
+     *
+     * @param array $snapshot File contents indexed by absolute path.
+     */
+    private function restore_metadata_files(array $snapshot): void {
+        global $CFG;
+
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            if (!array_key_exists($file, $snapshot)) {
+                unlink($file);
+            }
+        }
+        foreach ($snapshot as $file => $content) {
+            file_put_contents($file, $content, LOCK_EX);
+            chmod($file, $CFG->filepermissions);
         }
     }
 }

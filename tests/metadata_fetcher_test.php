@@ -26,6 +26,48 @@ namespace auth_saml2;
  */
 #[\PHPUnit\Framework\Attributes\CoversClass(metadata_fetcher::class)]
 final class metadata_fetcher_test extends \advanced_testcase {
+    public function test_fetch_uses_verified_synthetic_https_transport(): void {
+        $url = TEST_EXTERNAL_FILES_HTTPS_URL . '/rsstest.xml';
+
+        $fetcher = new metadata_fetcher();
+        $metadata = $fetcher->fetch($url);
+
+        self::assertStringContainsString('<rss', $metadata);
+        self::assertSame(200, $fetcher->get_curlinfo()['http_code'] ?? 0);
+    }
+
+    public function test_fetch_forces_hostname_verification_on_real_tls_connection(): void {
+        $fixturehost = parse_url(TEST_EXTERNAL_FILES_HTTPS_URL, PHP_URL_HOST);
+        $fixtureip = gethostbyname($fixturehost);
+        self::assertNotSame($fixturehost, $fixtureip, 'Synthetic HTTPS fixture must resolve in the test network.');
+        $url = str_replace($fixturehost, $fixtureip, TEST_EXTERNAL_FILES_HTTPS_URL) . '/rsstest.xml';
+
+        $curl = new \curl(['ignoresecurity' => true]);
+        $curl->setopt([
+            'CURLOPT_SSL_VERIFYPEER' => false,
+            'CURLOPT_SSL_VERIFYHOST' => 0,
+        ]);
+
+        $this->expectException(\moodle_exception::class);
+        $this->expectExceptionMessage('Metadata fetch failed');
+
+        (new metadata_fetcher())->fetch($url, $curl);
+    }
+
+    public function test_fetch_forces_certificate_verification_on_real_tls_connection(): void {
+        $curl = new \curl(['ignoresecurity' => true]);
+        $curl->setopt([
+            'CURLOPT_SSL_VERIFYPEER' => false,
+            'CURLOPT_SSL_VERIFYHOST' => 2,
+            'CURLOPT_CAINFO' => __DIR__ . '/fixtures/mockidp/mock.crt',
+        ]);
+
+        $this->expectException(\moodle_exception::class);
+        $this->expectExceptionMessage('Metadata fetch failed');
+
+        (new metadata_fetcher())->fetch(TEST_EXTERNAL_FILES_HTTPS_URL . '/rsstest.xml', $curl);
+    }
+
     public function test_fetch_rejects_http_before_network_access(): void {
         $curl = $this->createMock(\curl::class);
         $curl->expects($this->never())->method('get');
@@ -180,7 +222,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
 
         $fetcher = new metadata_fetcher();
 
-        $curl->expects($this->once())->method('get')->with($url, $options)->willReturn('Some error');
+        $curl->expects($this->once())->method('get')->with($url, [], $options)->willReturn('Some error');
         $curl->method('get_info')->willReturn(['http_code' => 200]);
         $curl->method('get_errno')->willReturn(0);
 

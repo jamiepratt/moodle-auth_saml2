@@ -95,7 +95,7 @@ if ($ADMIN->fulltree) {
         'auth_saml2/idpmetadatarefresh',
         get_string('idpmetadatarefresh', 'auth_saml2'),
         get_string('idpmetadatarefresh_help', 'auth_saml2'),
-        1,
+        0,
         $yesno
     ));
 
