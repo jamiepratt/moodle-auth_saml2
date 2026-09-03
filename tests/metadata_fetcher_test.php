@@ -100,8 +100,9 @@ final class metadata_fetcher_test extends \advanced_testcase {
                     static fn(string $target): string => (new metadata_fetcher())->fetch($target, $curl)
                 );
                 self::assertSame(get_string('metadatafetchtoolarge', 'auth_saml2'), $setting->write_setting($url));
-                $transfer = json_decode((string) file_get_contents($transferlog), true);
+                $transfer = self::wait_for_transfer_log($transferlog);
                 self::assertSame('/oversized-chunked', $transfer['path']);
+                self::assertGreaterThan(metadata_fetcher::MAX_METADATA_BYTES, $transfer['sent']);
                 self::assertLessThan($transfer['total'], $transfer['sent']);
                 self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
                 self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
@@ -116,6 +117,37 @@ final class metadata_fetcher_test extends \advanced_testcase {
                 );
             }
         );
+    }
+
+    /**
+     * Wait for the synthetic server to observe transfer beyond the enforced limit.
+     *
+     * @param string $transferlog Transfer log path.
+     * @return array Transfer details containing path, sent bytes, and total bytes.
+     */
+    private static function wait_for_transfer_log(string $transferlog): array {
+        $deadline = microtime(true) + 2;
+        $transfer = null;
+        do {
+            clearstatcache(true, $transferlog);
+            $contents = @file_get_contents($transferlog);
+            if (is_string($contents)) {
+                $candidate = json_decode($contents, true);
+                if (is_array($candidate)) {
+                    $transfer = $candidate;
+                    if (($transfer['sent'] ?? 0) > metadata_fetcher::MAX_METADATA_BYTES) {
+                        break;
+                    }
+                }
+            }
+            usleep(10000);
+        } while (microtime(true) < $deadline);
+
+        self::assertIsArray($transfer);
+        self::assertArrayHasKey('path', $transfer);
+        self::assertArrayHasKey('sent', $transfer);
+        self::assertArrayHasKey('total', $transfer);
+        return $transfer;
     }
 
     public function test_fetch_rejects_oversized_decoded_compressed_response(): void {

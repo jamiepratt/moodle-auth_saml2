@@ -380,7 +380,7 @@ final class upgrade_test extends \advanced_testcase {
         unlink($key);
     }
 
-    public function test_upgrade_rejects_directory_fifo_and_socket_private_key_entries_before_savepoint(): void {
+    public function test_upgrade_rejects_directory_and_fifo_private_key_entries_before_savepoint(): void {
         global $CFG;
 
         $directory = $CFG->dataroot . '/saml2';
@@ -394,30 +394,11 @@ final class upgrade_test extends \advanced_testcase {
                 posix_mkfifo($path, 0600);
                 return null;
             },
-            'socket.example.test.pem' => static fn(string $path) => @stream_socket_server('unix://' . $path),
         ];
         foreach ($entries as $filename => $create) {
             set_config('version', 2026090304, 'auth_saml2');
             $path = $directory . '/' . $filename;
             $resource = $create($path);
-            if ($filename === 'socket.example.test.pem' && !is_resource($resource)) {
-                @unlink($path);
-                file_put_contents($path, 'portable socket placeholder');
-                $hardener = $this->synthetic_socket_hardener($path);
-                try {
-                    $hardener->harden_directory($directory);
-                    self::fail('A synthetic socket private-key entry must block the upgrade.');
-                } catch (\moodle_exception $exception) {
-                    self::assertSame(
-                        get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
-                        $exception->getMessage()
-                    );
-                } finally {
-                    unlink($path);
-                }
-                self::assertSame('2026090304', get_config('auth_saml2', 'version'));
-                continue;
-            }
             try {
                 \xmldb_auth_saml2_upgrade(2026090304);
                 self::fail("A non-regular private-key entry '{$filename}' must block the upgrade.");

@@ -34,6 +34,20 @@ if ($port < 1 || $metadata === false || !is_readable($certificate) || !is_readab
     fwrite(STDERR, "Invalid synthetic TLS server arguments.\n");
     exit(1);
 }
+$recordtransfer = static function (string $path, int $sent, int $total) use ($transferlog): void {
+    if ($transferlog === '') {
+        return;
+    }
+    $record = json_encode(['path' => $path, 'sent' => $sent, 'total' => $total]);
+    $temporary = $transferlog . '.' . getmypid() . '.tmp';
+    if ($record === false || file_put_contents($temporary, $record, LOCK_EX) !== strlen($record)) {
+        @unlink($temporary);
+        return;
+    }
+    if (!rename($temporary, $transferlog)) {
+        @unlink($temporary);
+    }
+};
 $context = stream_context_create(['ssl' => [
     'local_cert' => $certificate,
     'local_pk' => $privatekey,
@@ -104,15 +118,15 @@ for ($requestnumber = 0; $requestnumber < 10; $requestnumber++) {
         $total = 8 * 1024 * 1024;
         $sent = 0;
         $chunk = str_repeat('x', 16384);
+        $recordtransfer($path, $sent, $total);
         while ($sent < $total) {
             $written = @fwrite($connection, dechex(strlen($chunk)) . "\r\n{$chunk}\r\n");
             if ($written === false || $written === 0) {
                 break;
             }
             $sent += strlen($chunk);
-            if ($transferlog !== '') {
-                file_put_contents($transferlog, json_encode(['path' => $path, 'sent' => $sent, 'total' => $total]));
-            }
+            $recordtransfer($path, $sent, $total);
+            usleep(1000);
         }
         @fwrite($connection, "0\r\n\r\n");
     } else if ($path === '/oversized-gzip') {
