@@ -87,6 +87,17 @@ class private_key_permissions {
     }
 
     /**
+     * Read path metadata without following symbolic links.
+     *
+     * @param string $path Path to inspect.
+     * @return array|false lstat result, or false when unavailable.
+     */
+    protected function path_status(string $path): array|false {
+        clearstatcache(true, $path);
+        return @lstat($path);
+    }
+
+    /**
      * Inspect a path without following symbolic links.
      *
      * @param string $path Path to inspect.
@@ -95,8 +106,7 @@ class private_key_permissions {
      * @return array|null lstat result, or null for an allowed absent path.
      */
     private function inspect_path(string $path, int $expectedtype, bool $allowmissing = false): ?array {
-        clearstatcache(true, $path);
-        $stat = @lstat($path);
+        $stat = $this->path_status($path);
         if ($stat === false) {
             if ($allowmissing && !is_link($path)) {
                 return null;

@@ -394,12 +394,30 @@ final class upgrade_test extends \advanced_testcase {
                 posix_mkfifo($path, 0600);
                 return null;
             },
-            'socket.example.test.pem' => static fn(string $path) => stream_socket_server('unix://' . $path),
+            'socket.example.test.pem' => static fn(string $path) => @stream_socket_server('unix://' . $path),
         ];
         foreach ($entries as $filename => $create) {
             set_config('version', 2026090304, 'auth_saml2');
             $path = $directory . '/' . $filename;
             $resource = $create($path);
+            if ($filename === 'socket.example.test.pem' && !is_resource($resource)) {
+                @unlink($path);
+                file_put_contents($path, 'portable socket placeholder');
+                $hardener = $this->synthetic_socket_hardener($path);
+                try {
+                    $hardener->harden_directory($directory);
+                    self::fail('A synthetic socket private-key entry must block the upgrade.');
+                } catch (\moodle_exception $exception) {
+                    self::assertSame(
+                        get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                        $exception->getMessage()
+                    );
+                } finally {
+                    unlink($path);
+                }
+                self::assertSame('2026090304', get_config('auth_saml2', 'version'));
+                continue;
+            }
             try {
                 \xmldb_auth_saml2_upgrade(2026090304);
                 self::fail("A non-regular private-key entry '{$filename}' must block the upgrade.");
@@ -411,14 +429,37 @@ final class upgrade_test extends \advanced_testcase {
             } finally {
                 if (is_resource($resource)) {
                     fclose($resource);
-                    unlink($path);
+                    if (file_exists($path)) {
+                        unlink($path);
+                    }
                 } else if (is_dir($path)) {
                     rmdir($path);
-                } else {
+                } else if (file_exists($path)) {
                     unlink($path);
                 }
             }
             self::assertSame('2026090304', get_config('auth_saml2', 'version'));
+        }
+    }
+
+    public function test_permission_hardener_rejects_socket_type_from_portable_filesystem_seam(): void {
+        global $CFG;
+
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $path = $directory . '/synthetic-socket.example.test.pem';
+        file_put_contents($path, 'portable socket placeholder');
+
+        try {
+            $this->synthetic_socket_hardener($path)->harden_directory($directory);
+            self::fail('A synthetic socket private-key entry must be rejected.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(
+                get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                $exception->getMessage()
+            );
+        } finally {
+            unlink($path);
         }
     }
 
@@ -488,5 +529,41 @@ final class upgrade_test extends \advanced_testcase {
         self::assertSame('original key', file_get_contents($original));
         unlink($key);
         unlink($original);
+    }
+
+    /**
+     * Build a hardener whose filesystem seam reports one regular fixture as a socket.
+     *
+     * @param string $socketpath Synthetic socket path.
+     * @return private_key_permissions
+     */
+    private function synthetic_socket_hardener(string $socketpath): private_key_permissions {
+        return new class ($socketpath) extends private_key_permissions {
+            /** @var string Path whose type is supplied by the portable filesystem seam. */
+            private string $socketpath;
+
+            /**
+             * Constructor.
+             *
+             * @param string $socketpath Synthetic socket path.
+             */
+            public function __construct(string $socketpath) {
+                $this->socketpath = $socketpath;
+            }
+
+            /**
+             * Supply a socket type when the operating system cannot create a Unix socket fixture.
+             *
+             * @param string $path Path to inspect.
+             * @return array|false lstat result, or false when unavailable.
+             */
+            protected function path_status(string $path): array|false {
+                $stat = parent::path_status($path);
+                if ($path === $this->socketpath && is_array($stat)) {
+                    $stat['mode'] = 0140000 | ($stat['mode'] & 07777);
+                }
+                return $stat;
+            }
+        };
     }
 }

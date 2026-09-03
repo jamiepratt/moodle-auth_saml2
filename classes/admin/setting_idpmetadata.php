@@ -523,9 +523,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      */
     private function metadata_file_attributes(string $file, string $directory): array {
         if (file_exists($file)) {
-            $owner = fileowner($file);
-            $group = filegroup($file);
-            $permissions = fileperms($file);
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
+            $permissions = $this->read_file_permissions($file);
             if ($owner === false || $group === false || $permissions === false) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
             }
@@ -543,7 +543,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             return ['owner' => $owner, 'group' => $group, 'mode' => $mode];
         }
 
-        $owner = function_exists('posix_geteuid') ? posix_geteuid() : fileowner($directory);
+        $owner = function_exists('posix_geteuid') ? posix_geteuid() : $this->read_file_owner($directory);
         $group = $this->metadata_storage_group($directory);
         if ($owner === false) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
@@ -551,7 +551,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         if ($group !== false) {
             return ['owner' => $owner, 'group' => $group, 'mode' => 0640];
         }
-        $ownergroup = function_exists('posix_getegid') ? posix_getegid() : filegroup($directory);
+        $ownergroup = function_exists('posix_getegid') ? posix_getegid() : $this->read_file_group($directory);
         if ($ownergroup === false) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }
@@ -565,8 +565,8 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      * @return int|false
      */
     private function metadata_storage_group(string $directory): int|false {
-        $group = filegroup($directory);
-        $permissions = fileperms($directory);
+        $group = $this->read_file_group($directory);
+        $permissions = $this->read_file_permissions($directory);
         if ($group === false || $permissions === false) {
             return false;
         }
@@ -586,6 +586,36 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     }
 
     /**
+     * Read a file owner's numeric ID.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_owner(string $file): int|false {
+        return fileowner($file);
+    }
+
+    /**
+     * Read a file group's numeric ID.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_group(string $file): int|false {
+        return filegroup($file);
+    }
+
+    /**
+     * Read a file's type and permission bits.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_permissions(string $file): int|false {
+        return fileperms($file);
+    }
+
+    /**
      * Apply live metadata ownership and mode before atomic publication.
      *
      * @param string $file Temporary file.
@@ -598,8 +628,8 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                 return false;
             }
         } else {
-            $owner = fileowner($file);
-            $group = filegroup($file);
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
             if ($owner === false || $group === false) {
                 return false;
             }
@@ -630,9 +660,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         }
         foreach ($paths as $file) {
             $contents = file_get_contents($file);
-            $owner = fileowner($file);
-            $group = filegroup($file);
-            $permissions = fileperms($file);
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
+            $permissions = $this->read_file_permissions($file);
             if ($contents === false || $owner === false || $group === false || $permissions === false) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
             }

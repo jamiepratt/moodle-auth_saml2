@@ -40,6 +40,9 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         global $CFG;
         parent::setUp();
         @unlink($CFG->dataroot . '/saml2/metadata.pending.json');
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            unlink($file);
+        }
         self::$config = new setting_idpmetadata();
     }
 
@@ -181,6 +184,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     public function test_write_failure_preserves_the_complete_active_trust_checkpoint(): void {
         global $CFG, $DB;
 
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         self::assertEmpty(self::$config->write_setting($xml));
@@ -194,7 +198,10 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         ];
         $changed = str_replace('Example.com test IDP', 'Changed display name', $xml);
         $setting = new setting_idpmetadata(null, static function (string $file): void {
-            file_put_contents($file, 'partially written metadata');
+            if (is_file($file)) {
+                chmod($file, 0600);
+            }
+            file_put_contents($file, 'partially written metadata', LOCK_EX);
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         });
 
@@ -283,116 +290,202 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     public function test_distinct_nonroot_writers_preserve_access_through_an_explicit_shared_group(): void {
         global $CFG;
 
-        if (
-            !function_exists('posix_geteuid') ||
-            !function_exists('posix_seteuid') ||
-            !function_exists('posix_setegid') ||
-            posix_geteuid() !== 0
-        ) {
-            $this->markTestSkipped('Changing effective identities requires POSIX support and a root test process.');
-        }
-
         $this->resetAfterTest();
-        $originalgid = posix_getegid();
         $directory = $CFG->dataroot . '/saml2/shared-group-' . random_string(10);
         self::assertTrue(mkdir($directory, 02770, true));
-        $sharedgid = 65534;
-        self::assertTrue(chgrp($directory, $sharedgid));
         self::assertTrue(chmod($directory, 02770));
         $temporary = $directory . '/metadata.tmp';
         file_put_contents($temporary, 'shared metadata');
-        self::assertTrue(chown($temporary, 34));
-        self::assertTrue(chgrp($temporary, $sharedgid));
-        $attributes = ['owner' => 33, 'group' => $sharedgid, 'mode' => 0640];
         $method = new \ReflectionMethod(setting_idpmetadata::class, 'apply_file_attributes');
-
-        try {
-            self::assertTrue(posix_setegid($sharedgid));
-            self::assertTrue(posix_seteuid(34));
+        $requiresportableseam =
+            !function_exists('posix_geteuid') ||
+            !function_exists('posix_seteuid') ||
+            !function_exists('posix_setegid') ||
+            posix_geteuid() !== 0;
+        if ($requiresportableseam) {
+            $writerowner = fileowner($temporary);
+            $sharedgid = filegroup($temporary);
+            self::assertIsInt($writerowner);
+            self::assertIsInt($sharedgid);
+            $differentowner = $writerowner === PHP_INT_MAX ? $writerowner - 1 : $writerowner + 1;
+            $attributes = ['owner' => $differentowner, 'group' => $sharedgid, 'mode' => 0640];
             self::assertTrue($method->invoke(self::$config, $temporary, $attributes));
-        } finally {
-            posix_seteuid(0);
-            posix_setegid($originalgid);
-        }
-
-        clearstatcache(true, $temporary);
-        self::assertSame(34, fileowner($temporary));
-        self::assertSame($sharedgid, filegroup($temporary));
-        self::assertSame(0640, fileperms($temporary) & 0777);
-        try {
-            self::assertTrue(posix_setegid($sharedgid));
-            self::assertTrue(posix_seteuid(33));
+            clearstatcache(true, $temporary);
+            self::assertSame($writerowner, fileowner($temporary));
+            self::assertSame($sharedgid, filegroup($temporary));
+            self::assertSame(0640, fileperms($temporary) & 0777);
             self::assertSame('shared metadata', file_get_contents($temporary));
-        } finally {
-            posix_seteuid(0);
-            posix_setegid($originalgid);
+        } else {
+            $originalgid = posix_getegid();
+            $sharedgid = 65534;
+            self::assertTrue(chgrp($directory, $sharedgid));
+            self::assertTrue(chown($temporary, 34));
+            self::assertTrue(chgrp($temporary, $sharedgid));
+            $attributes = ['owner' => 33, 'group' => $sharedgid, 'mode' => 0640];
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(34));
+                self::assertTrue($method->invoke(self::$config, $temporary, $attributes));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+
+            clearstatcache(true, $temporary);
+            self::assertSame(34, fileowner($temporary));
+            self::assertSame($sharedgid, filegroup($temporary));
+            self::assertSame(0640, fileperms($temporary) & 0777);
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(33));
+                self::assertSame('shared metadata', file_get_contents($temporary));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
         }
+        unlink($temporary);
+        rmdir($directory);
     }
 
     public function test_metadata_group_is_the_actual_setgid_directory_group(): void {
         global $CFG;
 
-        if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
-            $this->markTestSkipped('Selecting a synthetic group requires a root test process.');
-        }
         $directory = $CFG->dataroot . '/saml2/group-selection-' . random_string(10);
         self::assertTrue(mkdir($directory, 02770, true));
-        self::assertTrue(chgrp($directory, 65534));
         self::assertTrue(chmod($directory, 02770));
+        $expectedgroup = 65534;
+        $setting = self::$config;
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::assertTrue(chgrp($directory, $expectedgroup));
+            self::assertTrue(chmod($directory, 02770));
+        } else {
+            $setting = new class ($directory, $expectedgroup) extends setting_idpmetadata {
+                /** @var string Directory whose group is supplied by the filesystem seam. */
+                private string $directory;
+
+                /** @var int Synthetic directory group. */
+                private int $directorygroup;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param string $directory Synthetic-group directory.
+                 * @param int $directorygroup Synthetic group ID.
+                 */
+                public function __construct(string $directory, int $directorygroup) {
+                    parent::__construct();
+                    $this->directory = $directory;
+                    $this->directorygroup = $directorygroup;
+                }
+
+                /**
+                 * Supply a directory group unavailable to the current test identity.
+                 *
+                 * @param string $file File path.
+                 * @return int|false
+                 */
+                protected function read_file_group(string $file): int|false {
+                    return $file === $this->directory ? $this->directorygroup : parent::read_file_group($file);
+                }
+            };
+        }
         $method = new \ReflectionMethod(setting_idpmetadata::class, 'metadata_storage_group');
 
-        self::assertSame(65534, $method->invoke(self::$config, $directory));
+        self::assertSame($expectedgroup, $method->invoke($setting, $directory));
+        rmdir($directory);
     }
 
     public function test_distinct_nonroot_writer_activates_through_shared_setgid_directory(): void {
         global $CFG;
 
-        if (
-            !function_exists('posix_seteuid') ||
-            !function_exists('posix_setegid') ||
-            posix_geteuid() !== 0
-        ) {
-            $this->markTestSkipped('Changing effective identities requires a root POSIX test process.');
-        }
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         self::assertSame('', self::$config->write_setting($xml));
         $directory = $CFG->dataroot . '/saml2';
         $livefile = $directory . '/' . md5('xml') . '.idp.xml';
-        $sharedgid = 65534;
-        self::assertTrue(chgrp($directory, $sharedgid));
-        self::assertTrue(chmod($directory, 02770));
-        self::assertTrue(chgrp($livefile, $sharedgid));
-        self::assertTrue(chmod($livefile, 0640));
         $changed = str_replace('Example.com test IDP', 'Shared writer display name', $xml);
-        $originalgid = posix_getegid();
+        $canchangeidentity = function_exists('posix_geteuid') &&
+            function_exists('posix_seteuid') && function_exists('posix_setegid') && posix_geteuid() === 0;
+        if ($canchangeidentity) {
+            $sharedgid = 65534;
+            self::assertTrue(chgrp($directory, $sharedgid));
+            self::assertTrue(chmod($directory, 02770));
+            self::assertTrue(chgrp($livefile, $sharedgid));
+            self::assertTrue(chmod($livefile, 0640));
+            $originalgid = posix_getegid();
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(34));
+                $result = self::$config->write_setting($changed);
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
 
-        try {
-            self::assertTrue(posix_setegid($sharedgid));
-            self::assertTrue(posix_seteuid(34));
-            $result = self::$config->write_setting($changed);
-        } finally {
-            posix_seteuid(0);
-            posix_setegid($originalgid);
-        }
+            self::assertSame('', $result);
+            clearstatcache(true, $livefile);
+            self::assertSame(34, fileowner($livefile));
+            self::assertSame($sharedgid, filegroup($livefile));
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(33));
+                self::assertSame(trim($changed), file_get_contents($livefile));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+        } else {
+            $writerowner = fileowner($livefile);
+            $sharedgid = filegroup($directory);
+            self::assertIsInt($writerowner);
+            self::assertIsInt($sharedgid);
+            self::assertTrue(chmod($directory, 02770));
+            self::assertTrue(chmod($livefile, 0640));
+            $differentowner = $writerowner === PHP_INT_MAX ? $writerowner - 1 : $writerowner + 1;
+            $setting = new class ($livefile, $differentowner) extends setting_idpmetadata {
+                /** @var string Existing live file owned by the other synthetic writer. */
+                private string $livefile;
 
-        self::assertSame('', $result);
-        clearstatcache(true, $livefile);
-        self::assertSame(34, fileowner($livefile));
-        self::assertSame($sharedgid, filegroup($livefile));
-        try {
-            self::assertTrue(posix_setegid($sharedgid));
-            self::assertTrue(posix_seteuid(33));
+                /** @var int Synthetic owner of the existing live file. */
+                private int $liveowner;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param string $livefile Existing live file.
+                 * @param int $liveowner Synthetic existing owner.
+                 */
+                public function __construct(string $livefile, int $liveowner) {
+                    parent::__construct();
+                    $this->livefile = $livefile;
+                    $this->liveowner = $liveowner;
+                }
+
+                /**
+                 * Supply the prior writer's ownership at the filesystem boundary.
+                 *
+                 * @param string $file File path.
+                 * @return int|false
+                 */
+                protected function read_file_owner(string $file): int|false {
+                    return $file === $this->livefile ? $this->liveowner : parent::read_file_owner($file);
+                }
+            };
+
+            self::assertSame('', $setting->write_setting($changed));
+            clearstatcache(true, $livefile);
+            self::assertSame($writerowner, fileowner($livefile));
+            self::assertSame($sharedgid, filegroup($livefile));
+            self::assertSame(0640, fileperms($livefile) & 0777);
             self::assertSame(trim($changed), file_get_contents($livefile));
-        } finally {
-            posix_seteuid(0);
-            posix_setegid($originalgid);
         }
     }
 
     public function test_config_storage_failure_cannot_activate_validated_metadata(): void {
         global $DB;
 
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         self::assertEmpty(self::$config->write_setting($xml));
@@ -666,6 +759,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     public function test_approved_rollover_write_failure_restores_active_trust_and_keeps_proposal(): void {
         global $DB;
 
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $this->setAdminUser();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
@@ -683,7 +777,10 @@ final class setting_idpmetadata_test extends \advanced_testcase {
             'files' => $this->metadata_file_hashes(),
         ];
         $setting = new setting_idpmetadata(null, static function (string $file): void {
-            file_put_contents($file, 'partially written metadata');
+            if (is_file($file)) {
+                chmod($file, 0600);
+            }
+            file_put_contents($file, 'partially written metadata', LOCK_EX);
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         });
 
@@ -709,6 +806,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
     public function test_approved_rollover_config_failure_restores_active_trust_and_keeps_proposal(): void {
         global $DB;
 
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $this->setAdminUser();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');

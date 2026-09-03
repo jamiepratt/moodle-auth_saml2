@@ -29,6 +29,9 @@ final class metadata_trust_manager_test extends \advanced_testcase {
         global $CFG;
         parent::setUp();
         @unlink($CFG->dataroot . '/saml2/metadata.pending.json');
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            unlink($file);
+        }
     }
 
     public function test_bootstrap_approves_existing_inline_metadata_without_replacing_it(): void {
@@ -255,6 +258,7 @@ final class metadata_trust_manager_test extends \advanced_testcase {
     public function test_transaction_rollback_after_commit_marker_recovers_from_durable_prepared_state(): void {
         global $DB;
 
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         set_config('idpmetadata', $xml, 'auth_saml2');
@@ -328,7 +332,8 @@ final class metadata_trust_manager_test extends \advanced_testcase {
             'descriptorfingerprint' => $pending['descriptor']['fingerprint'],
             'files' => $snapshot,
         ], JSON_UNESCAPED_SLASHES), 'auth_saml2');
-        file_put_contents($livefile, trim($changed));
+        self::assertTrue(chmod($livefile, 0600));
+        self::assertSame(strlen(trim($changed)), file_put_contents($livefile, trim($changed)));
         chmod($livefile, 0600);
 
         $review = (new metadata_trust_manager())->get_pending_review();
@@ -699,6 +704,7 @@ final class metadata_trust_manager_test extends \advanced_testcase {
     }
 
     public function test_failed_historical_v1_migration_recovers_then_retries_without_false_proposal(): void {
+        $this->preventResetByRollback();
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         set_config('idpmetadata', $xml, 'auth_saml2');
