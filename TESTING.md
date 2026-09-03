@@ -20,6 +20,16 @@ moodle-plugin-ci behat --profile chrome --scss-deprecations
 moodle-plugin-ci behat --profile firefox --scss-deprecations
 ```
 
+When the Behat CLI and web server use different operating-system identities,
+the harness must set `AUTH_SAML2_BEHAT_WEB_GID` to the web process's numeric
+GID. Before SAML setup, the fixture creates or safely narrows its disposable
+directory to that group with mode `02770`, then validates the group, setgid bit,
+group write and execute access, and absence of world-write access. An existing
+setgid directory is treated as intentional and must already satisfy the
+contract; the fixture fails before creating a group-readable private key when
+it is unsafe. Same-identity non-root harnesses need no variable and retain
+owner-only key access.
+
 The PHPUnit suite requires a disposable Redis server. It deliberately fails
 instead of skipping Redis integration coverage when
 `AUTH_SAML2_REDIS_STORE_TEST_SERVER` is absent or unreachable.
