@@ -533,24 +533,12 @@ function xmldb_auth_saml2_upgrade($oldversion) {
     }
 
     if ($oldversion < 2026090304) {
-        $spname = (new moodle_url($CFG->wwwroot))->get_host();
-        $privatekey = $CFG->dataroot . '/saml2/' . $spname . '.pem';
-        if (is_file($privatekey)) {
-            $permissions = fileperms($privatekey);
-            if ($permissions === false) {
-                throw new moodle_exception('privatekeypermissionupgradefailed', 'auth_saml2');
-            }
-            $mode = $permissions & 0777;
-            if (($mode & 0007) !== 0) {
-                // World exposure identifies a legacy default mode. Reset it to owner-only access.
-                $safemode = ($mode & 0600) | 0400;
-                if (!chmod($privatekey, $safemode)) {
-                    throw new moodle_exception('privatekeypermissionupgradefailed', 'auth_saml2');
-                }
-            }
-        }
-
         upgrade_plugin_savepoint(true, 2026090304, 'auth', 'saml2');
+    }
+
+    if ($oldversion < 2026090305) {
+        (new \auth_saml2\private_key_permissions())->harden_directory($CFG->dataroot . '/saml2');
+        upgrade_plugin_savepoint(true, 2026090305, 'auth', 'saml2');
     }
 
     return true;

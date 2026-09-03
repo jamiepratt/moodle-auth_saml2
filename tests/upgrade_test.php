@@ -323,4 +323,170 @@ final class upgrade_test extends \advanced_testcase {
             'explicit group-readable locked mode' => [0440, 0440],
         ];
     }
+
+    public function test_upgrade_rejects_private_key_symlink_without_touching_outside_target(): void {
+        global $CFG;
+
+        set_config('version', 2026090304, 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $key = $directory . '/linked.example.test.pem';
+        @unlink($key);
+        $outside = make_request_directory() . '/outside.pem';
+        file_put_contents($outside, 'outside private key');
+        chmod($outside, 0666);
+        self::assertTrue(symlink($outside, $key));
+
+        try {
+            \xmldb_auth_saml2_upgrade(2026090304);
+            self::fail('A private-key symlink must block the upgrade.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(
+                get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                $exception->getMessage()
+            );
+        }
+
+        clearstatcache(true, $outside);
+        self::assertTrue(is_link($key));
+        self::assertSame('outside private key', file_get_contents($outside));
+        self::assertSame(0666, fileperms($outside) & 0777);
+        self::assertSame('2026090304', get_config('auth_saml2', 'version'));
+        unlink($key);
+    }
+
+    public function test_upgrade_rejects_broken_private_key_symlink_before_savepoint(): void {
+        global $CFG;
+
+        set_config('version', 2026090304, 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $key = $directory . '/broken.example.test.pem';
+        @unlink($key);
+        self::assertTrue(symlink(make_request_directory() . '/missing.pem', $key));
+
+        try {
+            \xmldb_auth_saml2_upgrade(2026090304);
+            self::fail('A broken private-key symlink must block the upgrade.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(
+                get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                $exception->getMessage()
+            );
+        }
+
+        self::assertTrue(is_link($key));
+        self::assertSame('2026090304', get_config('auth_saml2', 'version'));
+        unlink($key);
+    }
+
+    public function test_upgrade_rejects_directory_fifo_and_socket_private_key_entries_before_savepoint(): void {
+        global $CFG;
+
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $entries = [
+            'directory.example.test.pem' => static function (string $path) {
+                mkdir($path);
+                return null;
+            },
+            'fifo.example.test.pem' => static function (string $path) {
+                posix_mkfifo($path, 0600);
+                return null;
+            },
+            'socket.example.test.pem' => static fn(string $path) => stream_socket_server('unix://' . $path),
+        ];
+        foreach ($entries as $filename => $create) {
+            set_config('version', 2026090304, 'auth_saml2');
+            $path = $directory . '/' . $filename;
+            $resource = $create($path);
+            try {
+                \xmldb_auth_saml2_upgrade(2026090304);
+                self::fail("A non-regular private-key entry '{$filename}' must block the upgrade.");
+            } catch (\moodle_exception $exception) {
+                self::assertSame(
+                    get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                    $exception->getMessage()
+                );
+            } finally {
+                if (is_resource($resource)) {
+                    fclose($resource);
+                    unlink($path);
+                } else if (is_dir($path)) {
+                    rmdir($path);
+                } else {
+                    unlink($path);
+                }
+            }
+            self::assertSame('2026090304', get_config('auth_saml2', 'version'));
+        }
+    }
+
+    public function test_upgrade_hardens_alternate_host_keys_without_touching_unrelated_or_nested_files(): void {
+        global $CFG;
+
+        set_config('version', 2026090304, 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $alternatekey = $directory . '/alternate.example.test.pem';
+        $unrelated = $directory . '/operator-notes.txt';
+        $invalidpem = $directory . '/not-a-host!.pem';
+        $nested = $directory . '/nested-key-test';
+        make_writable_directory($nested);
+        $nestedkey = $nested . '/nested.example.test.pem';
+        foreach ([$alternatekey, $unrelated, $invalidpem, $nestedkey] as $path) {
+            file_put_contents($path, basename($path));
+            chmod($path, 0666);
+        }
+
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090304));
+
+        clearstatcache();
+        self::assertSame(0600, fileperms($alternatekey) & 0777);
+        self::assertSame(0666, fileperms($unrelated) & 0777);
+        self::assertSame(0666, fileperms($invalidpem) & 0777);
+        self::assertSame(0666, fileperms($nestedkey) & 0777);
+    }
+
+    public function test_permission_hardener_rejects_replaced_inode_before_chmod(): void {
+        global $CFG;
+
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $key = $directory . '/race.example.test.pem';
+        $original = $key . '.original';
+        @unlink($key);
+        @unlink($original);
+        file_put_contents($key, 'original key');
+        chmod($key, 0644);
+        $hardener = new class extends private_key_permissions {
+            /**
+             * Replace the inspected entry before the permission change.
+             *
+             * @param string $path Private-key path about to be changed.
+             */
+            protected function before_permission_change(string $path): void {
+                rename($path, $path . '.original');
+                file_put_contents($path, 'replacement key');
+                chmod($path, 0666);
+            }
+        };
+
+        try {
+            $hardener->harden_directory($directory);
+            self::fail('A replaced private-key inode must be rejected before chmod.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(
+                get_string('privatekeypermissionupgradefailed', 'auth_saml2'),
+                $exception->getMessage()
+            );
+        }
+
+        clearstatcache(true, $key);
+        self::assertSame('replacement key', file_get_contents($key));
+        self::assertSame(0666, fileperms($key) & 0777);
+        self::assertSame('original key', file_get_contents($original));
+        unlink($key);
+        unlink($original);
+    }
 }
