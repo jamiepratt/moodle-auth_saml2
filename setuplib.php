@@ -91,7 +91,20 @@ function create_certificates($saml2auth, $dn = false, $numberofdays = 3650) {
         return get_string('nullpubliccert', 'auth_saml2') . $errors;
     }
 
-    if (!file_put_contents($saml2auth->certpem, $privatekey)) {
+    $privatekeytemp = tempnam(dirname($saml2auth->certpem), '.private-key-');
+    if (
+        $privatekeytemp === false ||
+        file_put_contents($privatekeytemp, $privatekey, LOCK_EX) !== strlen($privatekey) ||
+        !chmod($privatekeytemp, 0600) ||
+        !rename($privatekeytemp, $saml2auth->certpem)
+    ) {
+        if (
+            is_string($privatekeytemp) &&
+            file_exists($privatekeytemp) &&
+            !unlink($privatekeytemp)
+        ) {
+            debugging('A failed SAML private key temporary file could not be removed.', DEBUG_DEVELOPER);
+        }
         return get_string('nullprivatecert', 'auth_saml2');
     }
     if (!file_put_contents($saml2auth->certcrt, $publickey)) {

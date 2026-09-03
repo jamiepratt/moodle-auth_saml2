@@ -212,24 +212,36 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertSame(0400, fileperms($livefile) & 0777);
     }
 
-    public function test_live_metadata_uses_the_secure_moodle_storage_identity_and_preserves_stricter_modes(): void {
+    public function test_unprepared_directory_uses_owner_only_metadata_without_changing_directory_or_private_key(): void {
         global $CFG;
 
         $this->resetAfterTest();
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        chmod($directory, 0770);
+        $directorymode = fileperms($directory) & 07777;
+        $directorygroup = filegroup($directory);
+        $privatekey = $directory . '/permission-test.pem';
+        file_put_contents($privatekey, 'private key material');
+        chmod($privatekey, 0600);
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         self::assertSame('', self::$config->write_setting($xml));
         $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         clearstatcache(true, $livefile);
-        self::assertSame(0640, fileperms($livefile) & 0777);
+        self::assertSame(0600, fileperms($livefile) & 0777);
         self::assertSame(posix_geteuid(), fileowner($livefile));
-        self::assertSame(filegroup(dirname($livefile)), filegroup($livefile));
+        self::assertSame($directorymode, fileperms($directory) & 07777);
+        self::assertSame($directorygroup, filegroup($directory));
+        self::assertSame('private key material', file_get_contents($privatekey));
+        self::assertSame(0600, fileperms($privatekey) & 0777);
+        unlink($privatekey);
 
         chmod($livefile, 0666);
         $changed = str_replace('Example.com test IDP', 'Hardened display name', $xml);
         self::assertEmpty(self::$config->write_setting($changed));
 
         clearstatcache(true, $livefile);
-        self::assertSame(0640, fileperms($livefile) & 0777);
+        self::assertSame(0600, fileperms($livefile) & 0777);
 
         chmod($livefile, 0400);
         $changed = str_replace('Hardened display name', 'Changed display name', $changed);
@@ -237,6 +249,35 @@ final class setting_idpmetadata_test extends \advanced_testcase {
 
         clearstatcache(true, $livefile);
         self::assertSame(0400, fileperms($livefile) & 0777);
+    }
+
+    public function test_failed_publication_does_not_change_inherited_directory_attributes(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        chmod($directory, 0770);
+        $target = $directory . '/' . md5('permission-failure') . '.idp.xml';
+        if (file_exists($target)) {
+            rmdir($target);
+        }
+        self::assertTrue(mkdir($target));
+        $mode = fileperms($directory) & 07777;
+        $group = filegroup($directory);
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'save_idp_metadata_xml');
+
+        try {
+            $method->invoke(self::$config, 'permission-failure', '<metadata />');
+            self::fail('Publishing over a directory must fail.');
+        } catch (setting_idpmetadata_exception $exception) {
+            self::assertSame(get_string('idpmetadata_writefailed', 'auth_saml2'), $exception->getMessage());
+        }
+
+        clearstatcache(true, $directory);
+        self::assertSame($mode, fileperms($directory) & 07777);
+        self::assertSame($group, filegroup($directory));
+        rmdir($target);
     }
 
     public function test_distinct_nonroot_writers_preserve_access_through_an_explicit_shared_group(): void {
@@ -736,10 +777,57 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertSame(trim($xml), $actual, "Invalid saved XML contents for: {$file}");
     }
 
-    public function test_it_allows_empty_values(): void {
-        self::assertTrue(self::$config->validate(''), 'Validate empty string.');
-        self::assertTrue(self::$config->validate('  '), ' Should trim spaces.');
-        self::assertTrue(self::$config->validate("\n \n"), 'Should trim newlines.');
+    public function test_it_allows_empty_initial_default_but_rejects_empty_active_values(): void {
+        $this->resetAfterTest();
+        unset_config('idpmetadata', 'auth_saml2');
+        unset_config('metadataapproved', 'auth_saml2');
+        self::assertTrue(self::$config->validate(''));
+        self::assertSame('', self::$config->write_setting(''));
+
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $error = get_string('idpmetadata_emptydisallowed', 'auth_saml2');
+        self::assertSame($error, self::$config->validate(''));
+        self::assertSame($error, self::$config->validate('  '));
+        self::assertSame($error, self::$config->validate("\n \n"));
+    }
+
+    public function test_empty_save_preserves_active_and_pending_trust_and_does_not_block_later_approval(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'emptySavePendingCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->write_setting($changed)
+        );
+        $manager = new metadata_trust_manager();
+        $pendingfingerprint = $manager->get_pending_fingerprint();
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+
+        self::assertSame(get_string('idpmetadata_emptydisallowed', 'auth_saml2'), self::$config->write_setting(''));
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertSame($pendingfingerprint, $manager->get_pending_fingerprint());
+
+        $this->setAdminUser();
+        self::$config->approve_pending(
+            get_admin()->id,
+            metadata_trust_manager::AUTHORITY_OWNER,
+            true,
+            $pendingfingerprint
+        );
+        self::assertSame($changed, get_config('auth_saml2', 'idpmetadata'));
+        self::assertFalse($manager->has_pending());
     }
 
     public function test_it_gets_idp_data_for_xml(): void {

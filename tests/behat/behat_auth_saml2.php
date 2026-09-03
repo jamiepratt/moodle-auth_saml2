@@ -425,9 +425,24 @@ EOF;
         $entityid = 'https://review.example/&quot;&gt;&lt;script id=&quot;saml-pending-xss&quot;&gt;' .
             'alert(1)&lt;/script&gt;';
         $changed = preg_replace('/entityID="[^"]+"/', 'entityID="' . $entityid . '"', $active, 1, $replacements);
+        $changed = preg_replace(
+            '/<(md:)?SingleSignOnService /',
+            '<$1SingleSignOnService index="7" isDefault="false" ',
+            $changed,
+            1,
+            $endpointreplacements
+        );
         $result = (new \auth_saml2\admin\setting_idpmetadata())->validate($changed);
-        if ($replacements !== 1 || $result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')) {
-            throw new ExpectationException('The HTML-like metadata proposal was not staged.', $this->getSession());
+        if (
+            $replacements !== 1 ||
+            $endpointreplacements !== 1 ||
+            $result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')
+        ) {
+            throw new ExpectationException(
+                "The HTML-like metadata proposal was not staged: entity={$replacements}, " .
+                    "endpoint={$endpointreplacements}, result={$result}",
+                $this->getSession()
+            );
         }
     }
 
@@ -451,6 +466,14 @@ EOF;
                 $expected = array_merge($expected, $entity['signingkeys']);
                 foreach ($entity['endpoints'] as $endpoint) {
                     $expected = array_merge($expected, array_filter($endpoint, static fn(string $value): bool => $value !== ''));
+                    $expected[] = get_string('metadataapprovalindex', 'auth_saml2') . ': ' .
+                        ($endpoint['index'] === ''
+                            ? get_string('metadataapprovalnotset', 'auth_saml2')
+                            : $endpoint['index']);
+                    $expected[] = get_string('metadataapprovalisdefault', 'auth_saml2') . ': ' .
+                        ($endpoint['isdefault'] === ''
+                            ? get_string('metadataapprovalnotset', 'auth_saml2')
+                            : $endpoint['isdefault']);
                 }
             }
         }

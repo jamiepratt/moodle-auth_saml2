@@ -557,15 +557,24 @@ class metadata_trust_manager {
     }
 
     /**
-     * Record a first approved descriptor only after its activation succeeds.
+     * Record a first descriptor or migrate an exact historical v1 descriptor after activation succeeds.
      *
      * @param idp_data[] $idps Activated metadata.
      */
     public function approve_initial(array $idps): void {
+        $descriptor = $this->describe($idps);
+        $approvedvalue = get_config('auth_saml2', self::APPROVED_CONFIG);
+        $approved = json_decode((string) $approvedvalue, true);
+        $shouldwrite = $approvedvalue === false;
         if (
-            get_config('auth_saml2', self::APPROVED_CONFIG) === false &&
-            !set_config(self::APPROVED_CONFIG, json_encode($this->describe($idps)), 'auth_saml2')
+            is_array($approved) &&
+            !isset($approved['version']) &&
+            $this->has_unambiguous_entity_relationships($descriptor) &&
+            hash_equals($approved['fingerprint'] ?? '', $this->legacy_fingerprint($descriptor['sources']))
         ) {
+            $shouldwrite = true;
+        }
+        if ($shouldwrite && !set_config(self::APPROVED_CONFIG, json_encode($descriptor), 'auth_saml2')) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
     }
@@ -790,7 +799,14 @@ class metadata_trust_manager {
             foreach ($source['entities'] ?? [] as $entity) {
                 $entityids[] = $entity['entityid'];
                 $keys = array_merge($keys, $entity['signingkeys']);
-                $endpoints = array_merge($endpoints, $entity['endpoints']);
+                foreach ($entity['endpoints'] as $endpoint) {
+                    $endpoints[] = [
+                        'type' => $endpoint['type'],
+                        'binding' => $endpoint['binding'],
+                        'location' => $endpoint['location'],
+                        'responselocation' => $endpoint['responselocation'],
+                    ];
+                }
             }
             sort($entityids);
             sort($keys);

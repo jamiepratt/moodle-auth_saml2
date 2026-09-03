@@ -77,6 +77,71 @@ final class metadata_fetcher_test extends \advanced_testcase {
         });
     }
 
+    public function test_fetch_aborts_oversized_chunked_response_during_transfer(): void {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $active = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        $setting = new admin\setting_idpmetadata();
+        self::assertSame('', $setting->write_setting($active));
+        $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'livehash' => hash_file('sha256', $livefile),
+        ];
+        $this->with_synthetic_tls_server(
+            'localhost',
+            true,
+            static function (string $url, \curl $curl, string $transferlog) use ($before, $livefile, $DB): void {
+                $url = str_replace('/metadata.xml', '/oversized-chunked', $url);
+                $setting = new admin\setting_idpmetadata(
+                    static fn(string $target): string => (new metadata_fetcher())->fetch($target, $curl)
+                );
+                self::assertSame(get_string('metadatafetchtoolarge', 'auth_saml2'), $setting->write_setting($url));
+                $transfer = json_decode((string) file_get_contents($transferlog), true);
+                self::assertSame('/oversized-chunked', $transfer['path']);
+                self::assertLessThan($transfer['total'], $transfer['sent']);
+                self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+                self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+                self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+                self::assertSame($before['livehash'], hash_file('sha256', $livefile));
+                self::assertFalse((new metadata_trust_manager())->has_pending());
+
+                $metadataurl = preg_replace('~/oversized-chunked$~', '/metadata.xml', $url);
+                self::assertSame(
+                    file_get_contents(__DIR__ . '/fixtures/metadata.xml'),
+                    (new metadata_fetcher())->fetch($metadataurl, $curl)
+                );
+            }
+        );
+    }
+
+    public function test_fetch_rejects_oversized_decoded_compressed_response(): void {
+        $this->with_synthetic_tls_server('localhost', true, static function (string $url, \curl $curl): void {
+            $url = str_replace('/metadata.xml', '/oversized-gzip', $url);
+            try {
+                (new metadata_fetcher())->fetch($url, $curl);
+                self::fail('Oversized decoded gzip metadata was accepted.');
+            } catch (\moodle_exception $exception) {
+                self::assertSame(get_string('metadatafetchtoolarge', 'auth_saml2'), $exception->getMessage());
+            }
+        });
+    }
+
+    public function test_fetch_rejects_oversized_redirect_body_before_following_location(): void {
+        $this->with_synthetic_tls_server('localhost', true, static function (string $url, \curl $curl): void {
+            $url = str_replace('/metadata.xml', '/oversized-redirect', $url);
+            try {
+                (new metadata_fetcher())->fetch($url, $curl);
+                self::fail('A redirect with an oversized body was followed.');
+            } catch (\moodle_exception $exception) {
+                self::assertSame(get_string('metadatafetchtoolarge', 'auth_saml2'), $exception->getMessage());
+            }
+        });
+    }
+
     /**
      * Verify a locally trusted certificate while fetching real metadata bytes.
      */
@@ -140,6 +205,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
         $httpport = (int) substr($httpaddress, strrpos($httpaddress, ':') + 1);
 
         [$certificate, $privatekey] = $this->create_synthetic_tls_identity();
+        $transferlog = make_request_directory() . '/tls-transfer.json';
 
         $pipes = [];
         $process = proc_open(
@@ -152,6 +218,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
                 $certificate,
                 $privatekey,
                 (string) $httpport,
+                $transferlog,
             ],
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
@@ -202,7 +269,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
         $curl->setopt($options);
 
         try {
-            $request("https://{$hostname}:{$port}/metadata.xml", $curl);
+            $request("https://{$hostname}:{$port}/metadata.xml", $curl, $transferlog);
         } finally {
             if (is_resource($httpprocess)) {
                 fclose($httppipes[1]);
@@ -395,7 +462,8 @@ final class metadata_fetcher_test extends \advanced_testcase {
             'CURLOPT_MAXREDIRS'      => 0,
             'CURLOPT_TIMEOUT'        => 30,
             'CURLOPT_MAXFILESIZE'    => metadata_fetcher::MAX_METADATA_BYTES,
-            'CURLOPT_RETURNTRANSFER' => true,
+            'CURLOPT_ENCODING'       => '',
+            'CURLOPT_RETURNTRANSFER' => false,
             'CURLOPT_NOBODY'         => false,
         ];
         $url = 'https://fakeurl.localhost';
@@ -412,7 +480,15 @@ final class metadata_fetcher_test extends \advanced_testcase {
 
         $fetcher = new metadata_fetcher();
 
-        $curl->expects($this->once())->method('get')->with($url, [], $options)->willReturn('Some error');
+        $curl->expects($this->once())->method('get')->with(
+            $url,
+            [],
+            $this->callback(static function (array $actual) use ($options): bool {
+                $callback = $actual['CURLOPT_WRITEFUNCTION'] ?? null;
+                unset($actual['CURLOPT_WRITEFUNCTION']);
+                return $callback instanceof \Closure && $actual === $options;
+            })
+        )->willReturn('Some error');
         $curl->method('get_info')->willReturn(['http_code' => 200]);
         $curl->method('get_errno')->willReturn(0);
 

@@ -79,16 +79,49 @@ class metadata_fetcher {
             'CURLOPT_MAXREDIRS'      => 0,
             'CURLOPT_TIMEOUT'        => 30,
             'CURLOPT_MAXFILESIZE'    => self::MAX_METADATA_BYTES,
-            'CURLOPT_RETURNTRANSFER' => true,
+            'CURLOPT_ENCODING'       => '',
+            'CURLOPT_RETURNTRANSFER' => false,
             'CURLOPT_NOBODY'         => false,
         ];
         $currenturl = $url;
         for ($redirects = 0; $redirects <= self::MAX_REDIRECTS; $redirects++) {
             $this->require_https($currenturl);
-            $xml = $curl->get($currenturl, [], $options);
+            $xml = '';
+            $received = false;
+            $toolarge = false;
+            $options['CURLOPT_WRITEFUNCTION'] = static function (
+                $handle,
+                string $chunk
+            ) use (
+                &$xml,
+                &$received,
+                &$toolarge
+            ): int {
+                $received = true;
+                $length = strlen($chunk);
+                if ($toolarge || strlen($xml) + $length > self::MAX_METADATA_BYTES) {
+                    $toolarge = true;
+                    return 0;
+                }
+                $xml .= $chunk;
+                return $length;
+            };
+            try {
+                $result = $curl->get($currenturl, [], $options);
+            } finally {
+                $curl->removeopt(['CURLOPT_WRITEFUNCTION']);
+                $curl->setopt(['CURLOPT_RETURNTRANSFER' => true]);
+            }
+            if (!$received && is_string($result)) {
+                $xml = $result;
+                $toolarge = strlen($xml) > self::MAX_METADATA_BYTES;
+            }
             $this->curlinfo = $curl->get_info();
             $this->curlerrorno = $curl->get_errno();
 
+            if ($toolarge) {
+                throw new \moodle_exception('metadatafetchtoolarge', 'auth_saml2');
+            }
             if (!empty($this->curlerrorno)) {
                 if ($this->curlerrorno === CURLE_FILESIZE_EXCEEDED) {
                     throw new \moodle_exception('metadatafetchtoolarge', 'auth_saml2');
@@ -125,9 +158,6 @@ class metadata_fetcher {
             }
             if ($status !== 200) {
                 throw new \moodle_exception('metadatafetchfailedstatus', 'auth_saml2', '', $status);
-            }
-            if (strlen($xml) > self::MAX_METADATA_BYTES) {
-                throw new \moodle_exception('metadatafetchtoolarge', 'auth_saml2');
             }
             return $xml;
         }

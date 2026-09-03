@@ -88,7 +88,10 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         $configvalue = (string) $value;
         $value = trim($configvalue);
         if ($value === '') {
-            return true;
+            $hasactive = trim((string) get_config('auth_saml2', 'idpmetadata')) !== '' ||
+                get_config('auth_saml2', 'metadataapproved') !== false ||
+                (new metadata_trust_manager())->has_pending();
+            return $hasactive ? get_string('idpmetadata_emptydisallowed', 'auth_saml2') : true;
         }
 
         try {
@@ -113,7 +116,20 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         $configvalue = (string) $data;
         $value = trim($configvalue);
         if ($value === '') {
-            return $this->write_config_value($configvalue) ? '' : get_string('errorsetting', 'admin');
+            try {
+                $manager = new metadata_trust_manager();
+                return $manager->with_lock(function () use ($manager, $configvalue): string {
+                    $hasactive = trim((string) get_config('auth_saml2', 'idpmetadata')) !== '' ||
+                        get_config('auth_saml2', 'metadataapproved') !== false ||
+                        $manager->has_pending();
+                    if ($hasactive) {
+                        return get_string('idpmetadata_emptydisallowed', 'auth_saml2');
+                    }
+                    return $this->write_config_value($configvalue) ? '' : get_string('errorsetting', 'admin');
+                });
+            } catch (\moodle_exception $exception) {
+                return $exception->getMessage();
+            }
         }
 
         try {
@@ -479,7 +495,10 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             return;
         }
 
-        $this->secure_metadata_directory(dirname($file));
+        $this->require_metadata_directory(dirname($file));
+        if (file_exists($file) && !is_file($file)) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
         $attributes = $this->metadata_file_attributes($file, dirname($file));
         $temporary = tempnam(dirname($file), '.metadata-');
         if (
@@ -515,6 +534,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                 $mode = ($mode & 0600) | (($mode & 0040) !== 0 ? 0040 : 0);
             }
             $mode &= 0660;
+            if ($this->metadata_storage_group($directory) === false) {
+                $mode &= 0600;
+            }
             if (($mode & 0400) === 0) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
             }
@@ -523,10 +545,17 @@ class setting_idpmetadata extends admin_setting_configtextarea {
 
         $owner = function_exists('posix_geteuid') ? posix_geteuid() : fileowner($directory);
         $group = $this->metadata_storage_group($directory);
-        if ($owner === false || $group === false) {
+        if ($owner === false) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }
-        return ['owner' => $owner, 'group' => $group, 'mode' => 0640];
+        if ($group !== false) {
+            return ['owner' => $owner, 'group' => $group, 'mode' => 0640];
+        }
+        $ownergroup = function_exists('posix_getegid') ? posix_getegid() : filegroup($directory);
+        if ($ownergroup === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        return ['owner' => $owner, 'group' => $ownergroup, 'mode' => 0600];
     }
 
     /**
@@ -546,21 +575,12 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     }
 
     /**
-     * Harden the metadata directory for shared-group, cross-identity publication.
+     * Require existing metadata storage without changing its private-key protection.
      *
      * @param string $directory Metadata directory.
      */
-    private function secure_metadata_directory(string $directory): void {
-        $permissions = fileperms($directory);
-        if ($permissions === false) {
-            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
-        }
-        $mode = (($permissions & 07777) | 02770) & ~0007;
-        $currentmode = $permissions & 07777;
-        if (
-            ($currentmode !== $mode && !chmod($directory, $mode)) ||
-            $this->metadata_storage_group($directory) === false
-        ) {
+    private function require_metadata_directory(string $directory): void {
+        if (!is_dir($directory) || !is_writable($directory)) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }
     }

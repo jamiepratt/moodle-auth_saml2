@@ -28,6 +28,7 @@ $port = (int) ($argv[2] ?? 0);
 $certificate = $argv[3] ?? '';
 $privatekey = $argv[4] ?? '';
 $httpport = (int) ($argv[5] ?? 0);
+$transferlog = $argv[6] ?? '';
 $metadata = file_get_contents(__DIR__ . '/metadata.xml');
 if ($port < 1 || $metadata === false || !is_readable($certificate) || !is_readable($privatekey)) {
     fwrite(STDERR, "Invalid synthetic TLS server arguments.\n");
@@ -94,9 +95,36 @@ for ($requestnumber = 0; $requestnumber < 10; $requestnumber++) {
         $extraheaders = "Location: /cycle-a\r\n";
         $body = '';
     }
-    $headers = "HTTP/1.1 {$status}\r\n{$extraheaders}" .
-        'Content-Length: ' . strlen($body) . "\r\nConnection: close\r\n\r\n";
-    fwrite($connection, $headers . $body);
+    if (in_array($path, ['/oversized-chunked', '/oversized-redirect'], true)) {
+        $status = $path === '/oversized-redirect' ? '302 Found' : '200 OK';
+        $extraheaders = $path === '/oversized-redirect'
+            ? "Location: /metadata.xml\r\n"
+            : "Content-Type: application/samlmetadata+xml\r\n";
+        fwrite($connection, "HTTP/1.1 {$status}\r\n{$extraheaders}Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+        $total = 8 * 1024 * 1024;
+        $sent = 0;
+        $chunk = str_repeat('x', 16384);
+        while ($sent < $total) {
+            $written = @fwrite($connection, dechex(strlen($chunk)) . "\r\n{$chunk}\r\n");
+            if ($written === false || $written === 0) {
+                break;
+            }
+            $sent += strlen($chunk);
+            if ($transferlog !== '') {
+                file_put_contents($transferlog, json_encode(['path' => $path, 'sent' => $sent, 'total' => $total]));
+            }
+        }
+        @fwrite($connection, "0\r\n\r\n");
+    } else if ($path === '/oversized-gzip') {
+        $body = gzencode(str_repeat('x', 3 * 1024 * 1024));
+        $headers = "HTTP/1.1 200 OK\r\nContent-Type: application/samlmetadata+xml\r\n" .
+            "Content-Encoding: gzip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+        fwrite($connection, $headers . dechex(strlen($body)) . "\r\n{$body}\r\n0\r\n\r\n");
+    } else {
+        $headers = "HTTP/1.1 {$status}\r\n{$extraheaders}" .
+            'Content-Length: ' . strlen($body) . "\r\nConnection: close\r\n\r\n";
+        fwrite($connection, $headers . $body);
+    }
     fclose($connection);
 }
 fclose($server);

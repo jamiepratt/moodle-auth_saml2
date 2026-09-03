@@ -680,30 +680,41 @@ final class metadata_trust_manager_test extends \advanced_testcase {
         );
     }
 
-    public function test_legacy_single_entity_descriptor_remains_compatible(): void {
+    public function test_historical_v1_single_entity_descriptor_is_accepted_and_migrated_to_v2(): void {
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         set_config('idpmetadata', $xml, 'auth_saml2');
         $manager = new metadata_trust_manager();
         $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
         $descriptor = json_decode(get_config('auth_saml2', 'metadataapproved'), true);
-        $source = $descriptor['sources'][0];
-        $entity = $source['entities'][0];
-        $legacysources = [[
-            'source' => $source['source'],
-            'entities' => [$entity['entityid']],
-            'keys' => $entity['signingkeys'],
-            'endpoints' => $entity['endpoints'],
-        ]];
-        set_config('metadataapproved', json_encode([
-            'fingerprint' => hash('sha256', json_encode($legacysources, JSON_UNESCAPED_SLASHES)),
-            'sources' => $legacysources,
-        ]), 'auth_saml2');
+        $historical = json_decode(file_get_contents(__DIR__ . '/fixtures/metadata-approved-v1.json'), true);
+        set_config('metadataapproved', json_encode($historical), 'auth_saml2');
 
-        self::assertSame(
-            metadata_trust_manager::UNCHANGED,
-            $manager->review($xml, (new idp_parser())->parse($xml))
-        );
+        self::assertSame('', (new admin\setting_idpmetadata())->write_setting($xml));
+        $migrated = json_decode(get_config('auth_saml2', 'metadataapproved'), true);
+        self::assertSame(2, $migrated['version']);
+        self::assertSame($descriptor['fingerprint'], $migrated['fingerprint']);
+        self::assertFalse($manager->has_pending());
+        self::assertFalse(get_config('auth_saml2', 'metadataactivationjournal'));
+    }
+
+    public function test_failed_historical_v1_migration_recovers_then_retries_without_false_proposal(): void {
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $historical = json_decode(file_get_contents(__DIR__ . '/fixtures/metadata-approved-v1.json'), true);
+        set_config('metadataapproved', json_encode($historical), 'auth_saml2');
+        $setting = new admin\setting_idpmetadata(null, null, static fn(): bool => false);
+
+        self::assertSame(get_string('errorsetting', 'admin'), $setting->write_setting($xml));
+        self::assertEquals($historical, json_decode(get_config('auth_saml2', 'metadataapproved'), true));
+        self::assertFalse(get_config('auth_saml2', 'metadataactivationjournal'));
+        self::assertFalse($manager->has_pending());
+
+        self::assertSame('', (new admin\setting_idpmetadata())->write_setting($xml));
+        self::assertSame(2, json_decode(get_config('auth_saml2', 'metadataapproved'), true)['version']);
         self::assertFalse($manager->has_pending());
     }
 

@@ -97,6 +97,12 @@ foreach ($review['details'] as $source) {
                 $endpoint['location'],
                 $endpoint['responselocation'],
                 get_string('metadataapprovalbinding', 'auth_saml2') . ': ' . $endpoint['binding'],
+                get_string('metadataapprovalindex', 'auth_saml2') . ': ' .
+                    ($endpoint['index'] === '' ? get_string('metadataapprovalnotset', 'auth_saml2') : $endpoint['index']),
+                get_string('metadataapprovalisdefault', 'auth_saml2') . ': ' .
+                    ($endpoint['isdefault'] === ''
+                        ? get_string('metadataapprovalnotset', 'auth_saml2')
+                        : $endpoint['isdefault']),
             ];
             $endpointdetails = array_filter($endpointdetails, static fn(string $value): bool => $value !== '');
             echo html_writer::tag('p', s(get_string('metadataapprovalendpoint', 'auth_saml2')) . ': ' .
