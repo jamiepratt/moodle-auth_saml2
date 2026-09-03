@@ -39,13 +39,23 @@ $PAGE->set_title(get_string('metadataapproval', 'auth_saml2'));
 $PAGE->set_heading(get_string('metadataapproval', 'auth_saml2'));
 
 $manager = new metadata_trust_manager();
+$manager->recover();
 if (optional_param('confirm', 0, PARAM_BOOL)) {
-    require_sesskey();
+    $requestsesskey = optional_param('sesskey', '', PARAM_RAW);
+    if ($requestsesskey === '' || !confirm_sesskey($requestsesskey)) {
+        redirect($url, get_string('invalidsesskey', 'error'), null, \core\output\notification::NOTIFY_ERROR);
+    }
     if (!optional_param('outofband', 0, PARAM_BOOL)) {
-        throw new moodle_exception('metadataapprovalconfirmationrequired', 'auth_saml2');
+        redirect(
+            $url,
+            get_string('metadataapprovalconfirmationrequired', 'auth_saml2'),
+            null,
+            \core\output\notification::NOTIFY_ERROR
+        );
     }
     $authority = required_param('authority', PARAM_ALPHA);
-    (new setting_idpmetadata())->approve_pending($USER->id, $authority);
+    $expectedfingerprint = required_param('proposalfingerprint', PARAM_ALPHANUM);
+    (new setting_idpmetadata())->approve_pending($USER->id, $authority, true, $expectedfingerprint);
     redirect($settingsurl, get_string('metadataapprovalsuccess', 'auth_saml2'));
 }
 
@@ -57,7 +67,8 @@ if (!$manager->has_pending()) {
     exit;
 }
 
-$summary = $manager->get_pending_summary();
+$review = $manager->get_pending_review();
+$summary = $review['summary'];
 echo $OUTPUT->notification(get_string('metadataapprovalwarning', 'auth_saml2'), 'warning');
 echo html_writer::tag('p', get_string('metadataapprovalsummary', 'auth_saml2', (object) [
     'signingkeys' => $summary['signingkeys'] ? get_string('yes') : get_string('no'),
@@ -65,10 +76,49 @@ echo html_writer::tag('p', get_string('metadataapprovalsummary', 'auth_saml2', (
     'entities' => $summary['entities'] ? get_string('yes') : get_string('no'),
     'sources' => $summary['sources'] ? get_string('yes') : get_string('no'),
 ]));
+echo html_writer::tag('h3', get_string('metadataapprovalfingerprint', 'auth_saml2'));
+echo html_writer::tag('p', html_writer::tag('code', s($review['proposalfingerprint'])));
+foreach ($review['details'] as $source) {
+    $sourcetype = $source['source'] === 'xml'
+        ? get_string('metadataapprovalsourceinline', 'auth_saml2')
+        : get_string('metadataapprovalsourceremote', 'auth_saml2');
+    echo html_writer::tag('h3', get_string('metadataapprovalsource', 'auth_saml2'));
+    echo html_writer::tag('p', s($sourcetype) . ': ' . html_writer::tag('code', s($source['source'])));
+    foreach ($source['entities'] as $entity) {
+        echo html_writer::tag('h4', get_string('metadataapprovalentity', 'auth_saml2'));
+        echo html_writer::tag('p', html_writer::tag('code', s($entity['entityid'])));
+        foreach ($entity['signingkeys'] as $key) {
+            echo html_writer::tag('p', s(get_string('metadataapprovalsigningkey', 'auth_saml2')) . ': ' .
+                html_writer::tag('code', s($key)));
+        }
+        foreach ($entity['endpoints'] as $endpoint) {
+            $endpointdetails = [
+                $endpoint['type'],
+                $endpoint['location'],
+                $endpoint['responselocation'],
+                get_string('metadataapprovalbinding', 'auth_saml2') . ': ' . $endpoint['binding'],
+                get_string('metadataapprovalindex', 'auth_saml2') . ': ' .
+                    ($endpoint['index'] === '' ? get_string('metadataapprovalnotset', 'auth_saml2') : $endpoint['index']),
+                get_string('metadataapprovalisdefault', 'auth_saml2') . ': ' .
+                    ($endpoint['isdefault'] === ''
+                        ? get_string('metadataapprovalnotset', 'auth_saml2')
+                        : $endpoint['isdefault']),
+            ];
+            $endpointdetails = array_filter($endpointdetails, static fn(string $value): bool => $value !== '');
+            echo html_writer::tag('p', s(get_string('metadataapprovalendpoint', 'auth_saml2')) . ': ' .
+                html_writer::tag('code', s(implode(' | ', $endpointdetails))));
+        }
+    }
+}
 
 echo html_writer::start_tag('form', ['method' => 'post', 'action' => $url]);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'confirm', 'value' => 1]);
+echo html_writer::empty_tag('input', [
+    'type' => 'hidden',
+    'name' => 'proposalfingerprint',
+    'value' => $review['proposalfingerprint'],
+]);
 echo html_writer::label(get_string('metadataapprovalauthority', 'auth_saml2'), 'id_authority');
 echo html_writer::select([
     metadata_trust_manager::AUTHORITY_OWNER => get_string('metadataapprovalowner', 'auth_saml2'),

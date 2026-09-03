@@ -125,4 +125,28 @@ final class locallib_test extends \advanced_testcase {
             $this->assertFalse(file_exists($auth->certcrt));
         }
     }
+
+    public function test_create_certificates_publishes_private_key_owner_only_without_changing_directory(): void {
+        $this->resetAfterTest();
+        require_once(__DIR__ . '/../setuplib.php');
+        $auth = get_auth_plugin('saml2');
+        $directory = dirname($auth->certpem);
+        $directorymode = fileperms($directory) & 07777;
+        chmod($directory, 0750);
+        @unlink($auth->certpem);
+        @unlink($auth->certcrt);
+        $oldmask = umask(0000);
+
+        try {
+            create_certificates($auth);
+        } finally {
+            umask($oldmask);
+        }
+
+        clearstatcache(true, $auth->certpem);
+        self::assertFileExists($auth->certpem);
+        self::assertSame(0600, fileperms($auth->certpem) & 0777);
+        self::assertSame(0750, fileperms($directory) & 07777);
+        chmod($directory, $directorymode);
+    }
 }

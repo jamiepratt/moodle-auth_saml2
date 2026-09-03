@@ -45,6 +45,12 @@ class behat_auth_saml2 extends behat_base {
     /** @var string Last captured self-test response. */
     private string $lastselftestresponse = '';
 
+    /** @var string Last captured metadata approval response. */
+    private string $lastmetadataapprovalresponse = '';
+
+    /** @var string Fingerprint of metadata active before a staged change. */
+    private string $activemetadatafingerprint = '';
+
     /**
      * Confirms the Authentication plugin is enabled
      *
@@ -256,6 +262,16 @@ class behat_auth_saml2 extends behat_base {
      */
     public function the_mock_saml_idp_is_configured() {
         global $CFG;
+        $metadatadirectory = $CFG->dataroot . '/saml2';
+        make_writable_directory($metadatadirectory);
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('posix_getpwnam')) {
+            $webidentity = posix_getpwnam('www-data');
+            if (is_array($webidentity) && isset($webidentity['gid'])) {
+                if (!chgrp($metadatadirectory, (int) $webidentity['gid']) || !chmod($metadatadirectory, 02770)) {
+                    throw new \RuntimeException('Could not configure the synthetic shared SAML metadata group.');
+                }
+            }
+        }
         $cert = file_get_contents(__DIR__ . '/../fixtures/mockidp/mock.crt');
         $cert = preg_replace('~(-----(BEGIN|END) CERTIFICATE-----)|\n~', '', $cert);
         $baseurl = $CFG->wwwroot . '/auth/saml2/tests/fixtures/mockidp';
@@ -292,6 +308,186 @@ EOF;
         if (!$auth->is_configured()) {
             require_once(__DIR__ . '/../../setuplib.php');
             create_certificates($auth);
+        }
+    }
+
+    /**
+     * Stage a signing-key rollover without activating it.
+     *
+     * @Given /^a SAML signing key change is pending +\# auth_saml2$/
+     */
+    public function a_saml_signing_key_change_is_pending(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        $changed = preg_replace(
+            '/(<X509Certificate>)(.)/',
+            '$1Z',
+            $active,
+            1,
+            $replacements
+        );
+        if ($replacements !== 1 || !is_string($changed)) {
+            throw new ExpectationException('The active synthetic metadata has no signing certificate.', $this->getSession());
+        }
+        $this->activemetadatafingerprint = hash('sha256', $active);
+        $result = (new \auth_saml2\admin\setting_idpmetadata())->validate($changed);
+        if ($result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')) {
+            throw new ExpectationException('The synthetic signing-key change was not staged.', $this->getSession());
+        }
+    }
+
+    /**
+     * Visit the manual metadata approval page.
+     *
+     * @When /^I go to the SAML metadata approval page +\# auth_saml2$/
+     */
+    public function i_go_to_the_saml_metadata_approval_page(): void {
+        $this->getSession()->visit($this->locate_path('/auth/saml2/metadata_approval.php'));
+    }
+
+    /**
+     * Request the approval page without leaving Behat on an expected exception page.
+     *
+     * @When /^I request the SAML metadata approval page +\# auth_saml2$/
+     */
+    public function i_request_the_saml_metadata_approval_page(): void {
+        $this->getSession()->visit($this->locate_path('/auth/saml2/metadata_approval.php'));
+        $this->lastmetadataapprovalresponse = $this->getSession()->getPage()->getContent();
+        $this->getSession()->visit($this->locate_path('/'));
+    }
+
+    /**
+     * Assert text in the captured metadata approval response.
+     *
+     * @param string $expected Expected response text.
+     * @Then /^the SAML metadata approval response should contain "([^"]*)" +\# auth_saml2$/
+     */
+    public function the_saml_metadata_approval_response_should_contain(string $expected): void {
+        if (!str_contains($this->lastmetadataapprovalresponse, $expected)) {
+            throw new ExpectationException(
+                "The metadata approval response did not contain '{$expected}'.",
+                $this->getSession()
+            );
+        }
+    }
+
+    /**
+     * Attempt approval without a session key.
+     *
+     * @When /^I request SAML metadata activation without a session key +\# auth_saml2$/
+     */
+    public function i_request_saml_metadata_activation_without_a_session_key(): void {
+        $path = '/auth/saml2/metadata_approval.php?confirm=1&outofband=1&authority=serviceowner';
+        $this->getSession()->visit($this->locate_path($path));
+    }
+
+    /**
+     * Assert that failed approval did not replace active metadata.
+     *
+     * @Then /^the SAML metadata change should remain pending and inactive +\# auth_saml2$/
+     */
+    public function the_saml_metadata_change_should_remain_pending_and_inactive(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        if (
+            !(new \auth_saml2\metadata_trust_manager())->has_pending() ||
+            !hash_equals($this->activemetadatafingerprint, hash('sha256', $active))
+        ) {
+            throw new ExpectationException('The staged metadata was activated or discarded.', $this->getSession());
+        }
+    }
+
+    /**
+     * Assert that approval consumed the proposal and replaced active metadata.
+     *
+     * @Then /^the SAML metadata change should be active +\# auth_saml2$/
+     */
+    public function the_saml_metadata_change_should_be_active(): void {
+        global $DB;
+
+        $active = (string) $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'auth_saml2',
+            'name' => 'idpmetadata',
+        ]);
+        if (
+            (new \auth_saml2\metadata_trust_manager())->has_pending() ||
+            hash_equals($this->activemetadatafingerprint, hash('sha256', $active))
+        ) {
+            throw new ExpectationException('The reviewed metadata proposal was not activated.', $this->getSession());
+        }
+    }
+
+    /**
+     * Replace the pending change with valid XML whose entity ID resembles executable HTML.
+     *
+     * @Given /^the pending SAML proposal contains HTML-like identifiers +\# auth_saml2$/
+     */
+    public function the_pending_saml_proposal_contains_html_like_identifiers(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        $entityid = 'https://review.example/&quot;&gt;&lt;script id=&quot;saml-pending-xss&quot;&gt;' .
+            'alert(1)&lt;/script&gt;';
+        $changed = preg_replace('/entityID="[^"]+"/', 'entityID="' . $entityid . '"', $active, 1, $replacements);
+        $changed = preg_replace(
+            '/<(md:)?SingleSignOnService /',
+            '<$1SingleSignOnService index="7" isDefault="false" ',
+            $changed,
+            1,
+            $endpointreplacements
+        );
+        $result = (new \auth_saml2\admin\setting_idpmetadata())->validate($changed);
+        if (
+            $replacements !== 1 ||
+            $endpointreplacements !== 1 ||
+            $result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')
+        ) {
+            throw new ExpectationException(
+                "The HTML-like metadata proposal was not staged: entity={$replacements}, " .
+                    "endpoint={$endpointreplacements}, result={$result}",
+                $this->getSession()
+            );
+        }
+    }
+
+    /**
+     * Assert that all safe approval details are shown and markup-like values remain text.
+     *
+     * @Then /^the exact pending SAML proposal details should be visible and escaped +\# auth_saml2$/
+     */
+    public function the_exact_pending_saml_proposal_details_should_be_visible_and_escaped(): void {
+        $manager = new \auth_saml2\metadata_trust_manager();
+        $review = $manager->get_pending_review();
+        $pending = $manager->get_pending_data($review['proposalfingerprint']);
+        $page = $this->getSession()->getPage();
+        $text = $page->getText();
+
+        $expected = [$review['proposalfingerprint']];
+        foreach ($pending['descriptor']['sources'] as $source) {
+            $expected[] = $source['source'];
+            foreach ($source['entities'] as $entity) {
+                $expected[] = $entity['entityid'];
+                $expected = array_merge($expected, $entity['signingkeys']);
+                foreach ($entity['endpoints'] as $endpoint) {
+                    $expected = array_merge($expected, array_filter($endpoint, static fn(string $value): bool => $value !== ''));
+                    $expected[] = get_string('metadataapprovalindex', 'auth_saml2') . ': ' .
+                        ($endpoint['index'] === ''
+                            ? get_string('metadataapprovalnotset', 'auth_saml2')
+                            : $endpoint['index']);
+                    $expected[] = get_string('metadataapprovalisdefault', 'auth_saml2') . ': ' .
+                        ($endpoint['isdefault'] === ''
+                            ? get_string('metadataapprovalnotset', 'auth_saml2')
+                            : $endpoint['isdefault']);
+                }
+            }
+        }
+        foreach ($expected as $value) {
+            if (!str_contains($text, $value)) {
+                throw new ExpectationException("The proposal detail '{$value}' was not visible.", $this->getSession());
+            }
+        }
+        $hidden = $page->find('css', 'input[name="proposalfingerprint"]');
+        if ($hidden === null || !hash_equals($review['proposalfingerprint'], (string) $hidden->getValue())) {
+            throw new ExpectationException('The visible and submitted proposal fingerprints differ.', $this->getSession());
+        }
+        if ($page->find('css', '#saml-pending-xss') !== null) {
+            throw new ExpectationException('Metadata content was interpreted as executable HTML.', $this->getSession());
         }
     }
 

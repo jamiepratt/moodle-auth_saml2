@@ -119,6 +119,9 @@ class auth extends \auth_plugin_base {
     public function __construct() {
         global $CFG, $DB;
 
+        // Authentication must never consume metadata left between file and database commit boundaries.
+        (new \auth_saml2\metadata_trust_manager())->recover_if_needed();
+
         // Add username field to the list of data mapping to be able to update it on user creation if required.
         if (!in_array('username', $this->userfields)) {
             array_unshift($this->userfields, "username");

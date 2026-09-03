@@ -42,13 +42,27 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     /** @var callable|null Metadata downloader override. */
     private $downloader;
 
+    /** @var callable|null Metadata writer override. */
+    private $writer;
+
+    /** @var callable|null Configuration writer override. */
+    private $configwriter;
+
     /**
      * Constructor.
      *
      * @param callable|null $downloader Metadata downloader override for controlled environments.
+     * @param callable|null $writer Metadata writer override for controlled environments.
+     * @param callable|null $configwriter Configuration writer override for controlled environments.
      */
-    public function __construct(?callable $downloader = null) {
+    public function __construct(
+        ?callable $downloader = null,
+        ?callable $writer = null,
+        ?callable $configwriter = null
+    ) {
         $this->downloader = $downloader;
+        $this->writer = $writer;
+        $this->configwriter = $configwriter;
 
         // All parameters are hardcoded because there can be only one instance:
         // When it validates, it saves extra configs, preventing this component from being reused as is.
@@ -71,17 +85,20 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      * @throws \coding_exception
      */
     public function validate($value) {
-        $value = trim($value);
-        if (empty($value)) {
-            return true;
+        $configvalue = (string) $value;
+        $value = trim($configvalue);
+        if ($value === '') {
+            $hasactive = trim((string) get_config('auth_saml2', 'idpmetadata')) !== '' ||
+                get_config('auth_saml2', 'metadataapproved') !== false ||
+                (new metadata_trust_manager())->has_pending();
+            return $hasactive ? get_string('idpmetadata_emptydisallowed', 'auth_saml2') : true;
         }
 
         try {
             $idps = $this->get_idps_data($value);
-            if ((new metadata_trust_manager())->review($value, $idps) === metadata_trust_manager::PENDING) {
+            if ((new metadata_trust_manager())->review($configvalue, $idps) === metadata_trust_manager::PENDING) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_pendingapproval', 'auth_saml2'));
             }
-            $this->process_all_idps_metadata($idps);
         } catch (setting_idpmetadata_exception | \moodle_exception $exception) {
             return $exception->getMessage();
         }
@@ -90,18 +107,156 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     }
 
     /**
+     * Validate and atomically persist the setting with its active trust checkpoint.
+     *
+     * @param string $data Submitted configuration value.
+     * @return string Empty on success, otherwise an error message.
+     */
+    public function write_setting($data) {
+        $configvalue = (string) $data;
+        $value = trim($configvalue);
+        if ($value === '') {
+            try {
+                $manager = new metadata_trust_manager();
+                return $manager->with_lock(function () use ($manager, $configvalue): string {
+                    $hasactive = trim((string) get_config('auth_saml2', 'idpmetadata')) !== '' ||
+                        get_config('auth_saml2', 'metadataapproved') !== false ||
+                        $manager->has_pending();
+                    if ($hasactive) {
+                        return get_string('idpmetadata_emptydisallowed', 'auth_saml2');
+                    }
+                    return $this->write_config_value($configvalue) ? '' : get_string('errorsetting', 'admin');
+                });
+            } catch (\moodle_exception $exception) {
+                return $exception->getMessage();
+            }
+        }
+
+        try {
+            $idps = $this->get_idps_data($value);
+            $manager = new metadata_trust_manager();
+            $result = $manager->review_and_apply(
+                $configvalue,
+                $idps,
+                function (callable $markcommitted) use ($manager, $idps, $configvalue): void {
+                    $this->activate_metadata(
+                        $idps,
+                        function () use ($manager, $idps, $configvalue): void {
+                            if (!$this->write_config_value($configvalue)) {
+                                throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
+                            }
+                            $manager->approve_initial($idps);
+                        },
+                        $markcommitted
+                    );
+                }
+            );
+            if ($result === metadata_trust_manager::PENDING) {
+                return get_string('idpmetadata_pendingapproval', 'auth_saml2');
+            }
+        } catch (setting_idpmetadata_exception | \moodle_exception $exception) {
+            return $exception->getMessage();
+        }
+
+        return '';
+    }
+
+    /**
+     * Persist the raw setting value.
+     *
+     * @param string $value Setting value.
+     * @return bool
+     */
+    private function write_config_value(string $value): bool {
+        if ($this->configwriter !== null) {
+            return (bool) ($this->configwriter)($value);
+        }
+        return $this->config_write($this->name, $value);
+    }
+
+    /**
      * Activate metadata after out-of-band confirmation by an authorised owner.
      *
      * @param int $userid Approver user ID.
      * @param string $authority Owner or emergency delegate.
+     * @param bool $outofbandconfirmed Whether the proposal was confirmed through a trusted separate channel.
+     * @param string $expectedfingerprint Cryptographic identity shown during review.
      */
-    public function approve_pending(int $userid, string $authority): void {
+    public function approve_pending(
+        int $userid,
+        string $authority,
+        bool $outofbandconfirmed,
+        string $expectedfingerprint
+    ): void {
+        global $USER;
+
+        if (!$outofbandconfirmed) {
+            throw new \moodle_exception('metadataapprovalconfirmationrequired', 'auth_saml2');
+        }
+        if ((int) $USER->id !== $userid) {
+            throw new \invalid_parameter_exception('The SAML metadata approver must match the current user.');
+        }
+        require_capability('moodle/site:config', \context_system::instance());
+
         $manager = new metadata_trust_manager();
         $manager->validate_authority($authority);
-        $pending = $manager->get_pending_data();
-        $this->process_all_idps_metadata($pending['idps']);
-        set_config('idpmetadata', $pending['configvalue'], 'auth_saml2');
-        $manager->commit_pending($userid, $authority);
+        $manager->activate_pending(
+            $expectedfingerprint,
+            function (
+                array $pending,
+                callable $markcommitted
+            ) use (
+                $manager,
+                $userid,
+                $authority
+            ): void {
+                $this->activate_metadata(
+                    $pending['idps'],
+                    function () use ($manager, $pending, $userid, $authority): void {
+                        if (!$this->write_config_value($pending['configvalue'])) {
+                            throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
+                        }
+                        $manager->record_approval($pending, $userid, $authority);
+                    },
+                    $markcommitted
+                );
+            }
+        );
+    }
+
+    /**
+     * Atomically activate metadata across database records and live files.
+     *
+     * @param idp_data[] $idps
+     * @param callable|null $withtransaction Additional database-backed trust changes.
+     * @param callable|null $beforecommit Durable marker written inside the database transaction.
+     */
+    private function activate_metadata(
+        array $idps,
+        ?callable $withtransaction = null,
+        ?callable $beforecommit = null
+    ): void {
+        global $DB;
+
+        $files = $this->snapshot_metadata_files();
+        $transaction = $DB->start_delegated_transaction();
+        try {
+            $this->process_all_idps_metadata($idps);
+            if ($withtransaction !== null) {
+                $withtransaction();
+            }
+            if ($beforecommit !== null) {
+                $beforecommit();
+            }
+            $transaction->allow_commit();
+        } catch (\Throwable $exception) {
+            try {
+                $this->restore_metadata_files($files);
+            } catch (\Throwable $restoreexception) {
+                $transaction->rollback($restoreexception);
+            }
+            $transaction->rollback($exception);
+        }
     }
 
     /**
@@ -273,6 +428,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                     get_string('idpmetadata_badurl', 'auth_saml2', $idp->idpurl)
                 );
             }
+            if (strlen($rawxml) > metadata_fetcher::MAX_METADATA_BYTES) {
+                throw new setting_idpmetadata_exception(get_string('metadatafetchtoolarge', 'auth_saml2'));
+            }
             $idp->set_rawxml($rawxml);
         }
 
@@ -332,8 +490,231 @@ class setting_idpmetadata extends admin_setting_configtextarea {
         require_once("{$CFG->dirroot}/auth/saml2/setup.php");
 
         $file = $saml2auth->get_file_idp_metadata_file($url);
-        if (file_put_contents($file, $xml, LOCK_EX) === false) {
+        if ($this->writer !== null) {
+            ($this->writer)($file, $xml);
+            return;
+        }
+
+        $this->require_metadata_directory(dirname($file));
+        if (file_exists($file) && !is_file($file)) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        $attributes = $this->metadata_file_attributes($file, dirname($file));
+        $temporary = tempnam(dirname($file), '.metadata-');
+        if (
+            $temporary === false ||
+            file_put_contents($temporary, $xml, LOCK_EX) !== strlen($xml) ||
+            !$this->apply_file_attributes($temporary, $attributes) ||
+            !rename($temporary, $file)
+        ) {
+            if (is_string($temporary) && file_exists($temporary) && !unlink($temporary)) {
+                debugging('A failed SAML metadata temporary file could not be removed.', DEBUG_DEVELOPER);
+            }
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+    }
+
+    /**
+     * Determine restrictive ownership and mode for a live metadata replacement.
+     *
+     * @param string $file Target file.
+     * @param string $directory Storage directory.
+     * @return array{owner: int, group: int, mode: int}
+     */
+    private function metadata_file_attributes(string $file, string $directory): array {
+        if (file_exists($file)) {
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
+            $permissions = $this->read_file_permissions($file);
+            if ($owner === false || $group === false || $permissions === false) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
+            $mode = $permissions & 0777;
+            if (($mode & 0007) !== 0) {
+                $mode = ($mode & 0600) | (($mode & 0040) !== 0 ? 0040 : 0);
+            }
+            $mode &= 0660;
+            if ($this->metadata_storage_group($directory) === false) {
+                $mode &= 0600;
+            }
+            if (($mode & 0400) === 0) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
+            return ['owner' => $owner, 'group' => $group, 'mode' => $mode];
+        }
+
+        $owner = function_exists('posix_geteuid') ? posix_geteuid() : $this->read_file_owner($directory);
+        $group = $this->metadata_storage_group($directory);
+        if ($owner === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        if ($group !== false) {
+            return ['owner' => $owner, 'group' => $group, 'mode' => 0640];
+        }
+        $ownergroup = function_exists('posix_getegid') ? posix_getegid() : $this->read_file_group($directory);
+        if ($ownergroup === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        return ['owner' => $owner, 'group' => $ownergroup, 'mode' => 0600];
+    }
+
+    /**
+     * Return the explicitly configured setgid metadata-directory group.
+     *
+     * @param string $directory Metadata directory.
+     * @return int|false
+     */
+    private function metadata_storage_group(string $directory): int|false {
+        $group = $this->read_file_group($directory);
+        $permissions = $this->read_file_permissions($directory);
+        if ($group === false || $permissions === false) {
+            return false;
+        }
+        $mode = $permissions & 07777;
+        return ($mode & 02070) === 02070 && ($mode & 0007) === 0 ? $group : false;
+    }
+
+    /**
+     * Require existing metadata storage without changing its private-key protection.
+     *
+     * @param string $directory Metadata directory.
+     */
+    private function require_metadata_directory(string $directory): void {
+        if (!is_dir($directory) || !is_writable($directory)) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+    }
+
+    /**
+     * Read a file owner's numeric ID.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_owner(string $file): int|false {
+        return fileowner($file);
+    }
+
+    /**
+     * Read a file group's numeric ID.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_group(string $file): int|false {
+        return filegroup($file);
+    }
+
+    /**
+     * Read a file's type and permission bits.
+     *
+     * @param string $file File path.
+     * @return int|false
+     */
+    protected function read_file_permissions(string $file): int|false {
+        return fileperms($file);
+    }
+
+    /**
+     * Apply live metadata ownership and mode before atomic publication.
+     *
+     * @param string $file Temporary file.
+     * @param array $attributes Required integer owner, group, and mode values.
+     * @return bool
+     */
+    private function apply_file_attributes(string $file, array $attributes): bool {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            if (!chown($file, $attributes['owner']) || !chgrp($file, $attributes['group'])) {
+                return false;
+            }
+        } else {
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
+            if ($owner === false || $group === false) {
+                return false;
+            }
+            if ($owner === $attributes['owner']) {
+                if ($group !== $attributes['group'] && !chgrp($file, $attributes['group'])) {
+                    return false;
+                }
+            } else if ($group !== $attributes['group'] || ($attributes['mode'] & 0040) === 0) {
+                // A different writer may publish only through the same explicitly shared Moodle data group.
+                return false;
+            }
+        }
+        return chmod($file, $attributes['mode']);
+    }
+
+    /**
+     * Snapshot all live IdP metadata files.
+     *
+     * @return array
+     */
+    public function snapshot_metadata_files(): array {
+        global $CFG;
+
+        $files = [];
+        $paths = glob($CFG->dataroot . '/saml2/*.idp.xml');
+        if ($paths === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        foreach ($paths as $file) {
+            $contents = file_get_contents($file);
+            $owner = $this->read_file_owner($file);
+            $group = $this->read_file_group($file);
+            $permissions = $this->read_file_permissions($file);
+            if ($contents === false || $owner === false || $group === false || $permissions === false) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
+            $files[$file] = [
+                'contents' => $contents,
+                'owner' => $owner,
+                'group' => $group,
+                'mode' => $permissions & 0777,
+            ];
+        }
+        return $files;
+    }
+
+    /**
+     * Restore all live IdP metadata files after an activation failure.
+     *
+     * @param array $snapshot File contents indexed by absolute path.
+     */
+    public function restore_metadata_files(array $snapshot): void {
+        global $CFG;
+
+        $directory = $CFG->dataroot . '/saml2';
+        foreach (array_keys($snapshot) as $file) {
+            if (dirname($file) !== $directory || !str_ends_with(basename($file), '.idp.xml')) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
+        }
+
+        $currentfiles = glob($directory . '/*.idp.xml');
+        if ($currentfiles === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        foreach ($currentfiles as $file) {
+            if (!array_key_exists($file, $snapshot)) {
+                if (!unlink($file)) {
+                    throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+                }
+            }
+        }
+        foreach ($snapshot as $file => $attributes) {
+            $temporary = tempnam(dirname($file), '.metadata-restore-');
+            if (
+                $temporary === false ||
+                file_put_contents($temporary, $attributes['contents'], LOCK_EX) !== strlen($attributes['contents']) ||
+                !$this->apply_file_attributes($temporary, $attributes) ||
+                !rename($temporary, $file)
+            ) {
+                if (is_string($temporary) && file_exists($temporary) && !unlink($temporary)) {
+                    debugging('A failed SAML metadata restore temporary file could not be removed.', DEBUG_DEVELOPER);
+                }
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
         }
     }
 }

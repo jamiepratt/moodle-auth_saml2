@@ -17,6 +17,7 @@
 namespace auth_saml2;
 
 use auth_saml2\admin\setting_idpmetadata;
+use auth_saml2\admin\setting_idpmetadata_exception;
 
 defined('MOODLE_INTERNAL') || die();
 
@@ -39,6 +40,9 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         global $CFG;
         parent::setUp();
         @unlink($CFG->dataroot . '/saml2/metadata.pending.json');
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            unlink($file);
+        }
         self::$config = new setting_idpmetadata();
     }
 
@@ -101,7 +105,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
 
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
-        self::assertEmpty(self::$config->write_setting($xml));
+        self::assertSame('', self::$config->write_setting($xml));
         $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         $livehash = hash_file('sha256', $file);
         $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'differentSigningCertificate=', $xml);
@@ -112,6 +116,444 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         );
         self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
         self::assertSame($livehash, hash_file('sha256', $file));
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('security_relevant_changes')]
+    public function test_security_relevant_change_is_staged_without_altering_the_active_checkpoint(
+        string $change,
+        string $summaryfield
+    ): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $setting = self::$config;
+        if ($change === 'signingkeys') {
+            $proposal = str_replace('q1og9SGCUU2yRL1tC+Y=', 'replacementSigningCertificate=', $xml);
+        } else if ($change === 'entities') {
+            $proposal = str_replace(
+                'entityID="https://idp.example.org/idp/shibboleth"',
+                'entityID="https://replacement.example.org/idp/shibboleth"',
+                $xml
+            );
+        } else if ($change === 'endpoints') {
+            $proposal = str_replace(
+                'https://idp.example.org/idp/profile/SAML2/Redirect/SSO',
+                'https://replacement.example.org/idp/profile/SAML2/Redirect/SSO',
+                $xml
+            );
+        } else {
+            $proposal = 'https://idp.example.test/metadata';
+            $setting = new setting_idpmetadata(static fn(): string => $xml);
+        }
+
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            $setting->write_setting($proposal)
+        );
+
+        $manager = new metadata_trust_manager();
+        self::assertTrue($manager->get_pending_summary()[$summaryfield]);
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+    }
+
+    /**
+     * Security-relevant metadata changes.
+     *
+     * @return array
+     */
+    public static function security_relevant_changes(): array {
+        return [
+            'signing key' => ['signingkeys', 'signingkeys'],
+            'entity ID' => ['entities', 'entities'],
+            'security endpoint' => ['endpoints', 'endpoints'],
+            'metadata source' => ['sources', 'sources'],
+        ];
+    }
+
+    public function test_write_failure_preserves_the_complete_active_trust_checkpoint(): void {
+        global $CFG, $DB;
+
+        $this->preventResetByRollback();
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+        chmod($livefile, 0400);
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $changed = str_replace('Example.com test IDP', 'Changed display name', $xml);
+        $setting = new setting_idpmetadata(null, static function (string $file): void {
+            if (is_file($file)) {
+                chmod($file, 0600);
+            }
+            file_put_contents($file, 'partially written metadata', LOCK_EX);
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        });
+
+        self::assertSame(
+            get_string('idpmetadata_writefailed', 'auth_saml2'),
+            $setting->write_setting($changed)
+        );
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertSame(hash('sha256', trim($xml)), hash_file('sha256', $livefile));
+        clearstatcache(true, $livefile);
+        self::assertSame(0400, fileperms($livefile) & 0777);
+    }
+
+    public function test_unprepared_directory_uses_owner_only_metadata_without_changing_directory_or_private_key(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        chmod($directory, 0770);
+        $directorymode = fileperms($directory) & 07777;
+        $directorygroup = filegroup($directory);
+        $privatekey = $directory . '/permission-test.pem';
+        file_put_contents($privatekey, 'private key material');
+        chmod($privatekey, 0600);
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
+        clearstatcache(true, $livefile);
+        self::assertSame(0600, fileperms($livefile) & 0777);
+        self::assertSame(posix_geteuid(), fileowner($livefile));
+        self::assertSame($directorymode, fileperms($directory) & 07777);
+        self::assertSame($directorygroup, filegroup($directory));
+        self::assertSame('private key material', file_get_contents($privatekey));
+        self::assertSame(0600, fileperms($privatekey) & 0777);
+        unlink($privatekey);
+
+        chmod($livefile, 0666);
+        $changed = str_replace('Example.com test IDP', 'Hardened display name', $xml);
+        self::assertEmpty(self::$config->write_setting($changed));
+
+        clearstatcache(true, $livefile);
+        self::assertSame(0600, fileperms($livefile) & 0777);
+
+        chmod($livefile, 0400);
+        $changed = str_replace('Hardened display name', 'Changed display name', $changed);
+        self::assertEmpty(self::$config->write_setting($changed));
+
+        clearstatcache(true, $livefile);
+        self::assertSame(0400, fileperms($livefile) & 0777);
+    }
+
+    public function test_failed_publication_does_not_change_inherited_directory_attributes(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        chmod($directory, 0770);
+        $target = $directory . '/' . md5('permission-failure') . '.idp.xml';
+        if (file_exists($target)) {
+            rmdir($target);
+        }
+        self::assertTrue(mkdir($target));
+        $mode = fileperms($directory) & 07777;
+        $group = filegroup($directory);
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'save_idp_metadata_xml');
+
+        try {
+            $method->invoke(self::$config, 'permission-failure', '<metadata />');
+            self::fail('Publishing over a directory must fail.');
+        } catch (setting_idpmetadata_exception $exception) {
+            self::assertSame(get_string('idpmetadata_writefailed', 'auth_saml2'), $exception->getMessage());
+        }
+
+        clearstatcache(true, $directory);
+        self::assertSame($mode, fileperms($directory) & 07777);
+        self::assertSame($group, filegroup($directory));
+        rmdir($target);
+    }
+
+    public function test_distinct_nonroot_writers_preserve_access_through_an_explicit_shared_group(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $directory = $CFG->dataroot . '/saml2/shared-group-' . random_string(10);
+        self::assertTrue(mkdir($directory, 02770, true));
+        self::assertTrue(chmod($directory, 02770));
+        $temporary = $directory . '/metadata.tmp';
+        file_put_contents($temporary, 'shared metadata');
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'apply_file_attributes');
+        $requiresportableseam =
+            !function_exists('posix_geteuid') ||
+            !function_exists('posix_seteuid') ||
+            !function_exists('posix_setegid') ||
+            posix_geteuid() !== 0;
+        if ($requiresportableseam) {
+            $writerowner = fileowner($temporary);
+            $sharedgid = filegroup($temporary);
+            self::assertIsInt($writerowner);
+            self::assertIsInt($sharedgid);
+            $differentowner = $writerowner === PHP_INT_MAX ? $writerowner - 1 : $writerowner + 1;
+            $attributes = ['owner' => $differentowner, 'group' => $sharedgid, 'mode' => 0640];
+            self::assertTrue($method->invoke(self::$config, $temporary, $attributes));
+            clearstatcache(true, $temporary);
+            self::assertSame($writerowner, fileowner($temporary));
+            self::assertSame($sharedgid, filegroup($temporary));
+            self::assertSame(0640, fileperms($temporary) & 0777);
+            self::assertSame('shared metadata', file_get_contents($temporary));
+        } else {
+            $originalgid = posix_getegid();
+            $sharedgid = 65534;
+            self::assertTrue(chgrp($directory, $sharedgid));
+            self::assertTrue(chown($temporary, 34));
+            self::assertTrue(chgrp($temporary, $sharedgid));
+            $attributes = ['owner' => 33, 'group' => $sharedgid, 'mode' => 0640];
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(34));
+                self::assertTrue($method->invoke(self::$config, $temporary, $attributes));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+
+            clearstatcache(true, $temporary);
+            self::assertSame(34, fileowner($temporary));
+            self::assertSame($sharedgid, filegroup($temporary));
+            self::assertSame(0640, fileperms($temporary) & 0777);
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(33));
+                self::assertSame('shared metadata', file_get_contents($temporary));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+        }
+        unlink($temporary);
+        rmdir($directory);
+    }
+
+    public function test_metadata_group_is_the_actual_setgid_directory_group(): void {
+        global $CFG;
+
+        $directory = $CFG->dataroot . '/saml2/group-selection-' . random_string(10);
+        self::assertTrue(mkdir($directory, 02770, true));
+        self::assertTrue(chmod($directory, 02770));
+        $expectedgroup = 65534;
+        $setting = self::$config;
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::assertTrue(chgrp($directory, $expectedgroup));
+            self::assertTrue(chmod($directory, 02770));
+        } else {
+            $setting = new class ($directory, $expectedgroup) extends setting_idpmetadata {
+                /** @var string Directory whose group is supplied by the filesystem seam. */
+                private string $directory;
+
+                /** @var int Synthetic directory group. */
+                private int $directorygroup;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param string $directory Synthetic-group directory.
+                 * @param int $directorygroup Synthetic group ID.
+                 */
+                public function __construct(string $directory, int $directorygroup) {
+                    parent::__construct();
+                    $this->directory = $directory;
+                    $this->directorygroup = $directorygroup;
+                }
+
+                /**
+                 * Supply a directory group unavailable to the current test identity.
+                 *
+                 * @param string $file File path.
+                 * @return int|false
+                 */
+                protected function read_file_group(string $file): int|false {
+                    return $file === $this->directory ? $this->directorygroup : parent::read_file_group($file);
+                }
+            };
+        }
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'metadata_storage_group');
+
+        self::assertSame($expectedgroup, $method->invoke($setting, $directory));
+        rmdir($directory);
+    }
+
+    public function test_distinct_nonroot_writer_activates_through_shared_setgid_directory(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $directory = $CFG->dataroot . '/saml2';
+        $livefile = $directory . '/' . md5('xml') . '.idp.xml';
+        $changed = str_replace('Example.com test IDP', 'Shared writer display name', $xml);
+        $canchangeidentity = function_exists('posix_geteuid') &&
+            function_exists('posix_seteuid') && function_exists('posix_setegid') && posix_geteuid() === 0;
+        if ($canchangeidentity) {
+            $sharedgid = 65534;
+            self::assertTrue(chgrp($directory, $sharedgid));
+            self::assertTrue(chmod($directory, 02770));
+            self::assertTrue(chgrp($livefile, $sharedgid));
+            self::assertTrue(chmod($livefile, 0640));
+            $originalgid = posix_getegid();
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(34));
+                $result = self::$config->write_setting($changed);
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+
+            self::assertSame('', $result);
+            clearstatcache(true, $livefile);
+            self::assertSame(34, fileowner($livefile));
+            self::assertSame($sharedgid, filegroup($livefile));
+            try {
+                self::assertTrue(posix_setegid($sharedgid));
+                self::assertTrue(posix_seteuid(33));
+                self::assertSame(trim($changed), file_get_contents($livefile));
+            } finally {
+                posix_seteuid(0);
+                posix_setegid($originalgid);
+            }
+        } else {
+            $writerowner = fileowner($livefile);
+            $sharedgid = filegroup($directory);
+            self::assertIsInt($writerowner);
+            self::assertIsInt($sharedgid);
+            self::assertTrue(chmod($directory, 02770));
+            self::assertTrue(chmod($livefile, 0640));
+            $differentowner = $writerowner === PHP_INT_MAX ? $writerowner - 1 : $writerowner + 1;
+            $setting = new class ($livefile, $differentowner) extends setting_idpmetadata {
+                /** @var string Existing live file owned by the other synthetic writer. */
+                private string $livefile;
+
+                /** @var int Synthetic owner of the existing live file. */
+                private int $liveowner;
+
+                /**
+                 * Constructor.
+                 *
+                 * @param string $livefile Existing live file.
+                 * @param int $liveowner Synthetic existing owner.
+                 */
+                public function __construct(string $livefile, int $liveowner) {
+                    parent::__construct();
+                    $this->livefile = $livefile;
+                    $this->liveowner = $liveowner;
+                }
+
+                /**
+                 * Supply the prior writer's ownership at the filesystem boundary.
+                 *
+                 * @param string $file File path.
+                 * @return int|false
+                 */
+                protected function read_file_owner(string $file): int|false {
+                    return $file === $this->livefile ? $this->liveowner : parent::read_file_owner($file);
+                }
+            };
+
+            self::assertSame('', $setting->write_setting($changed));
+            clearstatcache(true, $livefile);
+            self::assertSame($writerowner, fileowner($livefile));
+            self::assertSame($sharedgid, filegroup($livefile));
+            self::assertSame(0640, fileperms($livefile) & 0777);
+            self::assertSame(trim($changed), file_get_contents($livefile));
+        }
+    }
+
+    public function test_config_storage_failure_cannot_activate_validated_metadata(): void {
+        global $DB;
+
+        $this->preventResetByRollback();
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $changed = str_replace('Example.com test IDP', 'Validated but not stored', $xml);
+        $setting = new setting_idpmetadata(null, null, static fn(): bool => false);
+
+        self::assertSame(get_string('errorsetting', 'admin'), $setting->write_setting($changed));
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('failed_proposals')]
+    public function test_failed_proposal_preserves_the_complete_active_trust_checkpoint(
+        string $failure,
+        string $proposal
+    ): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $downloader = static function () use ($failure): string {
+            if ($failure === 'tls') {
+                throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', 'certificate verify failed');
+            }
+            if ($failure === 'status') {
+                throw new \moodle_exception('metadatafetchfailedstatus', 'auth_saml2', '', 503);
+            }
+            return '<not valid XML';
+        };
+
+        $error = (new setting_idpmetadata($downloader))->write_setting($proposal);
+
+        self::assertNotSame('', $error);
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertFalse((new metadata_trust_manager())->has_pending());
+    }
+
+    /**
+     * Failed remote proposal types.
+     *
+     * @return array
+     */
+    public static function failed_proposals(): array {
+        return [
+            'TLS certificate failure' => ['tls', 'https://idp.example.test/metadata'],
+            'HTTP response failure' => ['status', 'https://idp.example.test/metadata'],
+            'invalid XML' => ['xml', 'https://idp.example.test/metadata'],
+            'plain HTTP' => ['http', 'http://idp.example.test/metadata'],
+        ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('approval_authorities')]
@@ -130,21 +572,25 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         );
         $manager = new metadata_trust_manager();
         $pendingfingerprint = $manager->get_pending_summary()['proposedfingerprint'];
+        $approvalfingerprint = $manager->get_pending_fingerprint();
 
         $sink = $this->redirectEvents();
-        self::$config->approve_pending($admin->id, $authority);
+        self::$config->approve_pending($admin->id, $authority, true, $approvalfingerprint);
         $events = $sink->get_events();
         $sink->close();
 
-        self::assertSame(trim($changed), get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($changed, get_config('auth_saml2', 'idpmetadata'));
         $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         self::assertSame(trim($changed), file_get_contents($file));
         self::assertFalse($manager->has_pending());
         $approved = json_decode(get_config('auth_saml2', 'metadataapproved'), true);
         self::assertSame($pendingfingerprint, $approved['fingerprint']);
-        self::assertCount(1, $events);
-        self::assertInstanceOf(event\metadata_change_approved::class, $events[0]);
-        self::assertSame($authority, $events[0]->other['authority']);
+        $approvalevents = array_values(array_filter(
+            $events,
+            static fn(\core\event\base $event): bool => $event instanceof event\metadata_change_approved
+        ));
+        self::assertCount(1, $approvalevents);
+        self::assertSame($authority, $approvalevents[0]->other['authority']);
     }
 
     /**
@@ -163,20 +609,238 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         global $CFG;
 
         $this->resetAfterTest();
+        $this->setAdminUser();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         self::$config->write_setting($xml);
         $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'unapprovedSigningCertificate=', $xml);
         self::$config->validate($changed);
+        $approvalfingerprint = (new metadata_trust_manager())->get_pending_fingerprint();
         $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
 
         try {
-            self::$config->approve_pending(get_admin()->id, 'unauthorised');
+            self::$config->approve_pending(get_admin()->id, 'unauthorised', true, $approvalfingerprint);
             self::fail('Invalid authority must be rejected.');
         } catch (\invalid_parameter_exception $exception) {
             self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
             self::assertSame(trim($xml), file_get_contents($file));
             self::assertTrue((new metadata_trust_manager())->has_pending());
         }
+    }
+
+    public function test_approval_requires_explicit_out_of_band_confirmation(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'unconfirmedSigningCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($changed)
+        );
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+
+        try {
+            self::$config->approve_pending(
+                get_admin()->id,
+                metadata_trust_manager::AUTHORITY_OWNER,
+                false,
+                (new metadata_trust_manager())->get_pending_fingerprint()
+            );
+            self::fail('Activation must require explicit out-of-band confirmation.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(
+                get_string('metadataapprovalconfirmationrequired', 'auth_saml2'),
+                $exception->getMessage()
+            );
+        }
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertTrue((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_approval_rejects_a_pending_proposal_replaced_after_review(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $proposalareviewed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'reviewedSigningCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($proposalareviewed)
+        );
+        $manager = new metadata_trust_manager();
+        $reviewedfingerprint = $manager->get_pending_fingerprint();
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+
+        $proposalbreplacement = str_replace('q1og9SGCUU2yRL1tC+Y=', 'replacementSigningCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($proposalbreplacement)
+        );
+
+        try {
+            self::$config->approve_pending(
+                get_admin()->id,
+                metadata_trust_manager::AUTHORITY_OWNER,
+                true,
+                $reviewedfingerprint
+            );
+            self::fail('Approval must be bound to the exact proposal that was reviewed.');
+        } catch (\moodle_exception $exception) {
+            self::assertStringContainsString('proposal', strtolower($exception->getMessage()));
+        }
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertTrue($manager->has_pending());
+        self::assertNotSame($reviewedfingerprint, $manager->get_pending_summary()['proposedfingerprint']);
+    }
+
+    public function test_user_without_site_configuration_capability_cannot_activate_metadata(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'unauthorisedSigningCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($changed)
+        );
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $approvalfingerprint = (new metadata_trust_manager())->get_pending_fingerprint();
+        $user = $this->getDataGenerator()->create_user();
+        $this->setUser($user);
+
+        try {
+            self::$config->approve_pending(
+                $user->id,
+                metadata_trust_manager::AUTHORITY_OWNER,
+                true,
+                $approvalfingerprint
+            );
+            self::fail('Site configuration capability must be required.');
+        } catch (\required_capability_exception $exception) {
+            self::assertStringContainsString('do not currently have permissions', $exception->getMessage());
+        }
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertTrue((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_approved_rollover_write_failure_restores_active_trust_and_keeps_proposal(): void {
+        global $DB;
+
+        $this->preventResetByRollback();
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'approvedButUnwritableCertificate=', $xml);
+        $proposal = 'https://idp.example.test/rollover-metadata';
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            (new setting_idpmetadata(static fn(): string => $changed))->validate($proposal)
+        );
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $setting = new setting_idpmetadata(null, static function (string $file): void {
+            if (is_file($file)) {
+                chmod($file, 0600);
+            }
+            file_put_contents($file, 'partially written metadata', LOCK_EX);
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        });
+
+        try {
+            $setting->approve_pending(
+                get_admin()->id,
+                metadata_trust_manager::AUTHORITY_OWNER,
+                true,
+                (new metadata_trust_manager())->get_pending_fingerprint()
+            );
+            self::fail('A failed live write must abort approved activation.');
+        } catch (setting_idpmetadata_exception $exception) {
+            self::assertSame(get_string('idpmetadata_writefailed', 'auth_saml2'), $exception->getMessage());
+        }
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertTrue((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_approved_rollover_config_failure_restores_active_trust_and_keeps_proposal(): void {
+        global $DB;
+
+        $this->preventResetByRollback();
+        $this->resetAfterTest();
+        $this->setAdminUser();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'approvedButUnstoredCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->validate($changed)
+        );
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $setting = new setting_idpmetadata(null, null, static fn(): bool => false);
+
+        try {
+            $setting->approve_pending(
+                get_admin()->id,
+                metadata_trust_manager::AUTHORITY_OWNER,
+                true,
+                (new metadata_trust_manager())->get_pending_fingerprint()
+            );
+            self::fail('A failed approved configuration write must abort activation.');
+        } catch (setting_idpmetadata_exception $exception) {
+            self::assertSame(get_string('errorsetting', 'admin'), $exception->getMessage());
+        }
+
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertTrue((new metadata_trust_manager())->has_pending());
     }
 
     public function test_it_saves_all_idps_information_from_single_xml(): void {
@@ -211,10 +875,57 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertSame(trim($xml), $actual, "Invalid saved XML contents for: {$file}");
     }
 
-    public function test_it_allows_empty_values(): void {
-        self::assertTrue(self::$config->validate(''), 'Validate empty string.');
-        self::assertTrue(self::$config->validate('  '), ' Should trim spaces.');
-        self::assertTrue(self::$config->validate("\n \n"), 'Should trim newlines.');
+    public function test_it_allows_empty_initial_default_but_rejects_empty_active_values(): void {
+        $this->resetAfterTest();
+        unset_config('idpmetadata', 'auth_saml2');
+        unset_config('metadataapproved', 'auth_saml2');
+        self::assertTrue(self::$config->validate(''));
+        self::assertSame('', self::$config->write_setting(''));
+
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $error = get_string('idpmetadata_emptydisallowed', 'auth_saml2');
+        self::assertSame($error, self::$config->validate(''));
+        self::assertSame($error, self::$config->validate('  '));
+        self::assertSame($error, self::$config->validate("\n \n"));
+    }
+
+    public function test_empty_save_preserves_active_and_pending_trust_and_does_not_block_later_approval(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'emptySavePendingCertificate=', $xml);
+        self::assertSame(
+            get_string('idpmetadata_pendingapproval', 'auth_saml2'),
+            self::$config->write_setting($changed)
+        );
+        $manager = new metadata_trust_manager();
+        $pendingfingerprint = $manager->get_pending_fingerprint();
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+
+        self::assertSame(get_string('idpmetadata_emptydisallowed', 'auth_saml2'), self::$config->write_setting(''));
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertSame($pendingfingerprint, $manager->get_pending_fingerprint());
+
+        $this->setAdminUser();
+        self::$config->approve_pending(
+            get_admin()->id,
+            metadata_trust_manager::AUTHORITY_OWNER,
+            true,
+            $pendingfingerprint
+        );
+        self::assertSame($changed, get_config('auth_saml2', 'idpmetadata'));
+        self::assertFalse($manager->has_pending());
     }
 
     public function test_it_gets_idp_data_for_xml(): void {
@@ -251,8 +962,60 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertFalse($downloaded);
     }
 
+    public function test_oversized_remote_metadata_cannot_change_active_state(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $setting = new setting_idpmetadata(static function (): string {
+            return str_repeat('x', metadata_fetcher::MAX_METADATA_BYTES + 1);
+        });
+
+        self::assertSame(
+            get_string('metadatafetchtoolarge', 'auth_saml2'),
+            $setting->write_setting('https://idp.example.test/oversized.xml')
+        );
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertFalse((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_oversized_activation_journal_cannot_replace_live_metadata(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        unset_config('idpmetadata', 'auth_saml2');
+        unset_config('metadataapproved', 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $largefile = $directory . '/oversized-snapshot.idp.xml';
+        file_put_contents($largefile, str_repeat('x', metadata_trust_manager::MAX_JOURNAL_BYTES + 1));
+        $beforehash = hash_file('sha256', $largefile);
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+
+        self::assertSame(
+            get_string('idpmetadata_pendingwritefailed', 'auth_saml2'),
+            self::$config->write_setting($xml)
+        );
+        self::assertFalse(get_config('auth_saml2', 'idpmetadata'));
+        self::assertFalse(get_config('auth_saml2', 'metadataapproved'));
+        self::assertSame($beforehash, hash_file('sha256', $largefile));
+    }
+
     public function test_it_returns_error_if_metadata_url_is_not_valid(): void {
-        $error = self::$config->validate('https://invalid.url.metadata.test');
+        $config = new setting_idpmetadata(static function (string $url): string {
+            throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', $url);
+        });
+        $error = $config->validate('https://invalid.url.metadata.test');
         if (method_exists($this, 'assertStringContainsString')) {
             self::assertStringContainsString('Metadata fetch failed', $error);
             self::assertStringContainsString('invalid.url.metadata.test', $error);
@@ -273,6 +1036,22 @@ final class setting_idpmetadata_test extends \advanced_testcase {
             self::assertInstanceOf(idp_data::class, $idp);
             self::assertNotNull($idp->get_rawxml());
         }
+    }
+
+    /**
+     * Return hashes for every active metadata file.
+     *
+     * @return array
+     */
+    private function metadata_file_hashes(): array {
+        global $CFG;
+
+        $hashes = [];
+        foreach (glob($CFG->dataroot . '/saml2/*.idp.xml') ?: [] as $file) {
+            $hashes[basename($file)] = hash_file('sha256', $file);
+        }
+        ksort($hashes);
+        return $hashes;
     }
 
     /**

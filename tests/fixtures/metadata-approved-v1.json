@@ -1,0 +1,34 @@
+{
+    "fingerprint": "f6329df7c5127744e976227c6dba681cc9bc5419f13fb846a2ac1c61c59bf9bb",
+    "sources": [
+        {
+            "source": "xml",
+            "entities": [
+                "https://idp.example.org/idp/shibboleth"
+            ],
+            "keys": [
+                "sha256:6e98567f23387e2edabc4873be940f6e5ebb0783e2fef0b3d96bd3f017be4a18"
+            ],
+            "endpoints": [
+                {
+                    "type": "SingleSignOnService",
+                    "binding": "urn:mace:shibboleth:1.0:profiles:AuthnRequest",
+                    "location": "https://idp.example.org/idp/profile/Shibboleth/SSO",
+                    "responselocation": ""
+                },
+                {
+                    "type": "SingleSignOnService",
+                    "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+                    "location": "https://idp.example.org/idp/profile/SAML2/POST/SSO",
+                    "responselocation": ""
+                },
+                {
+                    "type": "SingleSignOnService",
+                    "binding": "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+                    "location": "https://idp.example.org/idp/profile/SAML2/Redirect/SSO",
+                    "responselocation": ""
+                }
+            ]
+        }
+    ]
+}

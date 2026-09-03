@@ -19,6 +19,15 @@ Feature: SAML2 Dual Login
     Then I should see "Log in"
     And I should not see "Mock IdP login"
 
+  @auth_saml2_metadata_trust
+  Scenario: A standard administrator login remains available while static SAML is active
+    Given the saml2 setting "Dual Login" is set to "no"                        # auth_saml2
+    When I go to the login page with "saml=off"                                # auth_saml2
+    And I set the field "Username" to "admin"
+    And I set the field "Password" to "admin"
+    And I press "Log in"
+    Then I should see "Admin User"
+
   Scenario: If dual login is "yes" then I need to select SAML2
     Given the saml2 setting "Dual Login" is set to "yes"                       # auth_saml2
     When I go to the login page                                                # auth_saml2

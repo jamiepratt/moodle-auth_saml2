@@ -123,6 +123,20 @@ $CFG->auth_saml2_store = '\\auth_saml2\\redis_store'; # Use an alternate store
 $CFG->auth_saml2_redis_server = ''; # Required for the redis_store above
 ```
 
+Remote IdP metadata retrieval permits HTTPS only, checks every redirect hop,
+follows at most five redirects, and stops each transfer when decoded XML exceeds
+2 MiB, including compressed, chunked, and redirect responses. Staged
+proposals and activation recovery journals are stored outside the plugin config
+cache and are each limited to 8 MiB. A preconfigured setgid
+`moodledata/saml2` directory enables owner/group-only metadata access when web
+and cron identities share its group. The plugin never changes that directory's
+mode or group because it also contains the SP private key. Without the explicit
+setgid setup, new metadata files remain owner-only. New SP private keys are
+published owner-only. Upgrades inspect every direct host-named `.pem` key
+without following links, reject non-regular entries, and remove world exposure
+while preserving existing stricter owner/group modes. Empty saves are rejected
+once trust is active so they cannot implicitly deactivate or discard it.
+
 
 ## Testing
 
