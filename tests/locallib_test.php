@@ -149,4 +149,51 @@ final class locallib_test extends \advanced_testcase {
         self::assertSame(0750, fileperms($directory) & 07777);
         chmod($directory, $directorymode);
     }
+
+    public function test_create_certificates_can_publish_for_an_explicit_trusted_setgid_group(): void {
+        $this->resetAfterTest();
+        require_once(__DIR__ . '/../setuplib.php');
+        $auth = get_auth_plugin('saml2');
+        $directory = dirname($auth->certpem);
+        $directorymode = fileperms($directory) & 07777;
+        $trustedgroup = filegroup($directory);
+        self::assertIsInt($trustedgroup);
+        self::assertTrue(chmod($directory, 02750));
+        @unlink($auth->certpem);
+        @unlink($auth->certcrt);
+
+        try {
+            self::assertEmpty(create_certificates($auth, false, 3650, $trustedgroup));
+            clearstatcache(true, $auth->certpem);
+            self::assertFileExists($auth->certpem);
+            self::assertSame($trustedgroup, filegroup($auth->certpem));
+            self::assertSame(0640, fileperms($auth->certpem) & 0777);
+        } finally {
+            chmod($directory, $directorymode);
+        }
+    }
+
+    public function test_create_certificates_rejects_group_access_without_a_matching_setgid_directory(): void {
+        $this->resetAfterTest();
+        require_once(__DIR__ . '/../setuplib.php');
+        $auth = get_auth_plugin('saml2');
+        $directory = dirname($auth->certpem);
+        $directorymode = fileperms($directory) & 07777;
+        $directorygroup = filegroup($directory);
+        self::assertIsInt($directorygroup);
+        self::assertTrue(chmod($directory, 0750));
+        @unlink($auth->certpem);
+        @unlink($auth->certcrt);
+
+        try {
+            self::assertSame(
+                get_string('nullprivatecert', 'auth_saml2'),
+                create_certificates($auth, false, 3650, $directorygroup)
+            );
+            self::assertFileDoesNotExist($auth->certpem);
+            self::assertFileDoesNotExist($auth->certcrt);
+        } finally {
+            chmod($directory, $directorymode);
+        }
+    }
 }

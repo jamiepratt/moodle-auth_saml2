@@ -27,11 +27,13 @@
 
 use auth_saml2\admin\saml2_settings;
 use auth_saml2\task\metadata_refresh;
+use auth_saml2\testing\behat_private_key_access;
 use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Mink\Exception\ExpectationException;
 use Behat\Gherkin\Node\TableNode;
 
 require_once(__DIR__ . '/../../../../lib/behat/behat_base.php');
+require_once(__DIR__ . '/../../classes/testing/behat_private_key_access.php');
 
 /**
  * Behat tests for auth_saml2
@@ -204,6 +206,14 @@ class behat_auth_saml2 extends behat_base {
      * Initialise saml2
      */
     private function initialise_saml2() {
+        global $CFG;
+
+        $effectiveuid = function_exists('posix_geteuid') ? posix_geteuid() : -1;
+        behat_private_key_access::prepare_directory(
+            $CFG->dataroot . '/saml2',
+            getenv(behat_private_key_access::ENVIRONMENT_VARIABLE),
+            $effectiveuid
+        );
         $this->apply_defaults();
         require(__DIR__ . '/../../setup.php');
     }
@@ -263,14 +273,14 @@ class behat_auth_saml2 extends behat_base {
     public function the_mock_saml_idp_is_configured() {
         global $CFG;
         $metadatadirectory = $CFG->dataroot . '/saml2';
-        make_writable_directory($metadatadirectory);
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('posix_getpwnam')) {
-            $webidentity = posix_getpwnam('www-data');
-            if (is_array($webidentity) && isset($webidentity['gid'])) {
-                if (!chgrp($metadatadirectory, (int) $webidentity['gid']) || !chmod($metadatadirectory, 02770)) {
-                    throw new \RuntimeException('Could not configure the synthetic shared SAML metadata group.');
-                }
-            }
+        $effectiveuid = function_exists('posix_geteuid') ? posix_geteuid() : -1;
+        $privatekeygroup = behat_private_key_access::trusted_group(
+            $metadatadirectory,
+            getenv(behat_private_key_access::ENVIRONMENT_VARIABLE),
+            $effectiveuid
+        );
+        if ($privatekeygroup === false) {
+            make_writable_directory($metadatadirectory);
         }
         $cert = file_get_contents(__DIR__ . '/../fixtures/mockidp/mock.crt');
         $cert = preg_replace('~(-----(BEGIN|END) CERTIFICATE-----)|\n~', '', $cert);
@@ -305,9 +315,22 @@ EOF;
         set_config('debug', '1', 'auth_saml2');
 
         $auth = get_auth_plugin('saml2');
-        if (!$auth->is_configured()) {
+        $needscertificates = !$auth->is_configured();
+        if ($privatekeygroup !== false && file_exists($auth->certpem)) {
+            clearstatcache(true, $auth->certpem);
+            $keygroup = filegroup($auth->certpem);
+            $keypermissions = fileperms($auth->certpem);
+            $needscertificates = $needscertificates ||
+                $keygroup !== $privatekeygroup ||
+                $keypermissions === false ||
+                ($keypermissions & 0040) === 0;
+        }
+        if ($needscertificates) {
             require_once(__DIR__ . '/../../setuplib.php');
-            create_certificates($auth);
+            $error = create_certificates($auth, false, 3650, $privatekeygroup);
+            if ($error) {
+                throw new \RuntimeException('Could not create synthetic SAML certificates: ' . $error);
+            }
         }
     }
 
