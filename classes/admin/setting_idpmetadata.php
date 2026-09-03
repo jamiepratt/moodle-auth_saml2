@@ -589,7 +589,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      * Apply live metadata ownership and mode before atomic publication.
      *
      * @param string $file Temporary file.
-     * @param array{owner: int, group: int, mode: int} $attributes File attributes.
+     * @param array{owner:int,group:int,mode:int} $attributes File attributes.
      * @return bool
      */
     private function apply_file_attributes(string $file, array $attributes): bool {

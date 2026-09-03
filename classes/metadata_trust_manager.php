@@ -272,6 +272,7 @@ class metadata_trust_manager {
     /**
      * Return and verify the staged configuration and metadata objects.
      *
+     * @param string|null $expectedfingerprint Expected proposal fingerprint, or null for any proposal.
      * @return array
      */
     public function get_pending_data(?string $expectedfingerprint = null): array {
@@ -439,6 +440,8 @@ class metadata_trust_manager {
      * Persist enough pre-activation state to recover after process death.
      *
      * @param array $pending Verified pending proposal.
+     * @param bool $requirespending Whether recovery requires the matching pending proposal.
+     * @param bool $clearpending Whether to clear the pending proposal after activation.
      */
     private function prepare_activation_locked(array $pending, bool $requirespending, bool $clearpending): void {
         $journal = [

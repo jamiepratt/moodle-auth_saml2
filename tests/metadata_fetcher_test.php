@@ -183,6 +183,7 @@ final class metadata_fetcher_test extends \advanced_testcase {
      * @param string $hostname URL host to verify.
      * @param bool $trustcertificate Whether to trust the synthetic server certificate.
      * @param callable $request Assertion callback receiving URL and cURL client.
+     * @param bool $withhttpredirect Whether the TLS service redirects through HTTP.
      */
     private function with_synthetic_tls_server(
         string $hostname,
