@@ -34,6 +34,7 @@ final class upgrade_test extends \advanced_testcase {
         require_once($CFG->libdir . '/upgradelib.php');
         require_once($CFG->dirroot . '/auth/saml2/db/upgrade.php');
         @unlink($CFG->dataroot . '/saml2/metadata.pending.json');
+        @unlink($CFG->dataroot . '/saml2/metadata.pending.json.activating');
     }
 
     public function test_new_install_default_disables_metadata_refresh(): void {
@@ -133,9 +134,8 @@ final class upgrade_test extends \advanced_testcase {
         return $file;
     }
 
-    #[\PHPUnit\Framework\Attributes\DataProvider('legacy_pending_files')]
-    public function test_upgrade_moves_file_backed_pending_authority_into_shared_moodle_storage(string $suffix): void {
-        global $CFG;
+    public function test_upgrade_moves_file_backed_pending_authority_into_shared_moodle_storage(): void {
+        global $CFG, $DB;
 
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
@@ -148,28 +148,138 @@ final class upgrade_test extends \advanced_testcase {
             \auth_saml2\metadata_trust_manager::PENDING,
             $manager->review($changed, (new \auth_saml2\idp_parser())->parse($changed))
         );
-        $payload = get_config('auth_saml2', 'metadatapending');
-        unset_config('metadatapending', 'auth_saml2');
+        $payload = $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']);
+        $DB->delete_records('auth_saml2_truststate', ['name' => 'pending']);
         $directory = $CFG->dataroot . '/saml2';
         make_writable_directory($directory);
-        $path = $directory . '/metadata.pending.json' . $suffix;
+        $path = $directory . '/metadata.pending.json';
         file_put_contents($path, $payload);
 
         self::assertTrue(\xmldb_auth_saml2_upgrade(2026090300));
 
-        self::assertSame($payload, get_config('auth_saml2', 'metadatapending'));
+        self::assertSame($payload, $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']));
+        self::assertFalse(get_config('auth_saml2', 'metadatapending'));
         self::assertFileDoesNotExist($path);
     }
 
-    /**
-     * File-backed proposal states used before DB-backed pending authority.
-     *
-     * @return array
-     */
-    public static function legacy_pending_files(): array {
-        return [
-            'pending review' => [''],
-            'interrupted activation' => ['.activating'],
-        ];
+    public function test_upgrade_quarantines_ambiguous_legacy_activating_marker(): void {
+        global $CFG, $DB;
+
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('version', 2026090300, 'auth_saml2');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'ambiguousUpgradeCertificate=', $xml);
+        $manager->review($changed, (new idp_parser())->parse($changed));
+        $payload = $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']);
+        $DB->delete_records('auth_saml2_truststate', ['name' => 'pending']);
+        $path = $CFG->dataroot . '/saml2/metadata.pending.json.activating';
+        make_writable_directory(dirname($path));
+        file_put_contents($path, $payload);
+
+        $this->expectException(\moodle_exception::class);
+        try {
+            \xmldb_auth_saml2_upgrade(2026090300);
+        } finally {
+            self::assertFileExists($path);
+            self::assertFalse((new metadata_trust_manager())->has_pending());
+        }
+    }
+
+    public function test_upgrade_retires_provably_committed_legacy_activating_marker(): void {
+        global $CFG, $DB;
+
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('version', 2026090300, 'auth_saml2');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'committedUpgradeCertificate=', $xml);
+        $manager->review($changed, (new idp_parser())->parse($changed));
+        $payload = $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']);
+        $decoded = json_decode($payload, true);
+        $DB->delete_records('auth_saml2_truststate', ['name' => 'pending']);
+        set_config('idpmetadata', $decoded['configvalue'], 'auth_saml2');
+        set_config('metadataapproved', json_encode($decoded['descriptor']), 'auth_saml2');
+        $this->existing_live_file('xml', $decoded['idps'][0]['xml']);
+        $path = $CFG->dataroot . '/saml2/metadata.pending.json.activating';
+        make_writable_directory(dirname($path));
+        file_put_contents($path, $payload);
+
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090300));
+
+        self::assertFileDoesNotExist($path);
+        self::assertFalse((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_upgrade_quarantines_partial_legacy_activating_marker(): void {
+        global $CFG, $DB;
+
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('version', 2026090300, 'auth_saml2');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'partialUpgradeCertificate=', $xml);
+        $manager->review($changed, (new idp_parser())->parse($changed));
+        $payload = $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']);
+        $DB->delete_records('auth_saml2_truststate', ['name' => 'pending']);
+        $this->existing_live_file('xml', $changed);
+        $path = $CFG->dataroot . '/saml2/metadata.pending.json.activating';
+        file_put_contents($path, $payload);
+
+        $this->expectException(\moodle_exception::class);
+        try {
+            \xmldb_auth_saml2_upgrade(2026090300);
+        } finally {
+            self::assertFileExists($path);
+            self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
+            self::assertFalse((new metadata_trust_manager())->has_pending());
+        }
+    }
+
+    public function test_upgrade_moves_cached_trust_payloads_to_dedicated_storage(): void {
+        global $DB;
+
+        set_config('version', 2026090301, 'auth_saml2');
+        $DB->delete_records('auth_saml2_truststate');
+        $pending = json_encode(['kind' => 'pending', 'bounded' => true]);
+        $journal = json_encode(['kind' => 'activation', 'bounded' => true]);
+        set_config('metadatapending', $pending, 'auth_saml2');
+        set_config('metadataactivationjournal', $journal, 'auth_saml2');
+
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090301));
+
+        self::assertSame($pending, $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']));
+        self::assertSame($journal, $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'activation']));
+        self::assertFalse(get_config('auth_saml2', 'metadatapending'));
+        self::assertFalse(get_config('auth_saml2', 'metadataactivationjournal'));
+    }
+
+    public function test_auth_bootstrap_tolerates_pre_schema_upgrade_then_upgrade_creates_state_table(): void {
+        global $CFG, $DB;
+
+        $dbman = $DB->get_manager();
+        $table = new \xmldb_table('auth_saml2_truststate');
+        $dbman->drop_table($table);
+        set_config('version', 2026090301, 'auth_saml2');
+        set_config('idpmetadata', '', 'auth_saml2');
+        set_config('metadataactivationjournal', json_encode([
+            'state' => 'prepared',
+            'proposalfingerprint' => hash('sha256', 'legacy recovery'),
+            'requirespending' => false,
+            'clearpending' => true,
+            'configfingerprint' => hash('sha256', ''),
+            'descriptorfingerprint' => hash('sha256', 'descriptor'),
+            'files' => [],
+        ]), 'auth_saml2');
+        require_once($CFG->dirroot . '/auth/saml2/auth.php');
+
+        new \auth_plugin_saml2();
+        self::assertFalse(get_config('auth_saml2', 'metadataactivationjournal'));
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090301));
+
+        self::assertTrue($dbman->table_exists($table));
     }
 }

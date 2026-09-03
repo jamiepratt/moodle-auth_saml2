@@ -71,6 +71,31 @@ XML;
         self::assertFalse($refreshtask->execute());
     }
 
+    public function test_metadata_refresh_recovers_before_disabled_early_exit(): void {
+        global $DB;
+
+        set_config('idpmetadatarefresh', 0, 'auth_saml2');
+        set_config('idpmetadata', 'https://idp.example.test/metadata', 'auth_saml2');
+        $DB->insert_record('auth_saml2_truststate', (object) [
+            'name' => 'activation',
+            'value' => json_encode([
+                'state' => 'prepared',
+                'proposalfingerprint' => hash('sha256', 'initial activation'),
+                'requirespending' => false,
+                'clearpending' => true,
+                'configfingerprint' => hash('sha256', 'different'),
+                'descriptorfingerprint' => hash('sha256', 'different'),
+                'files' => [],
+            ]),
+            'timemodified' => time(),
+        ]);
+
+        $this->expectOutputString('IdP metadata refresh is not configured. ' .
+            "Enable it in the auth settings or disable this scheduled task\n");
+        self::assertFalse((new metadata_refresh())->execute());
+        self::assertFalse($DB->record_exists('auth_saml2_truststate', ['name' => 'activation']));
+    }
+
     public function test_metadata_refresh_fetch_fails(): void {
         set_config('idpmetadatarefresh', 1, 'auth_saml2');
         set_config('idpmetadata', 'http://somefakeidpurl.local', 'auth_saml2');

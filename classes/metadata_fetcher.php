@@ -36,6 +36,12 @@ require_once(__DIR__ . '/../../../lib/filelib.php');
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class metadata_fetcher {
+    /** Maximum number of HTTPS redirects followed for one metadata request. */
+    public const MAX_REDIRECTS = 5;
+
+    /** Maximum accepted metadata response size (2 MiB). */
+    public const MAX_METADATA_BYTES = 2 * 1024 * 1024;
+
     /**
      * @var array
      */
@@ -60,10 +66,6 @@ class metadata_fetcher {
      * @throws \moodle_exception
      */
     public function fetch($url, $curl = null) {
-        if (strtolower((string) parse_url($url, PHP_URL_SCHEME)) !== 'https') {
-            throw new \moodle_exception('idpmetadata_httpsrequired', 'auth_saml2');
-        }
-
         if (!$curl instanceof \curl) {
             $curl = new \curl();
         }
@@ -72,37 +74,121 @@ class metadata_fetcher {
             'CURLOPT_SSL_VERIFYHOST' => 2,
             'CURLOPT_PROTOCOLS' => CURLPROTO_HTTPS,
             'CURLOPT_REDIR_PROTOCOLS' => CURLPROTO_HTTPS,
-            'CURLOPT_CONNECTTIMEOUT' => 20,
-            'CURLOPT_FOLLOWLOCATION' => 1,
-            'CURLOPT_MAXREDIRS'      => 5,
-            'CURLOPT_TIMEOUT'        => 300,
+            'CURLOPT_CONNECTTIMEOUT' => 10,
+            'CURLOPT_FOLLOWLOCATION' => 0,
+            'CURLOPT_MAXREDIRS'      => 0,
+            'CURLOPT_TIMEOUT'        => 30,
+            'CURLOPT_MAXFILESIZE'    => self::MAX_METADATA_BYTES,
             'CURLOPT_RETURNTRANSFER' => true,
             'CURLOPT_NOBODY'         => false,
         ];
-        $xml = $curl->get($url, [], $options);
-        $this->curlinfo = $curl->get_info();
-        $this->curlerrorno = $curl->get_errno();
+        $currenturl = $url;
+        for ($redirects = 0; $redirects <= self::MAX_REDIRECTS; $redirects++) {
+            $this->require_https($currenturl);
+            $xml = $curl->get($currenturl, [], $options);
+            $this->curlinfo = $curl->get_info();
+            $this->curlerrorno = $curl->get_errno();
 
-        // If there is a curl errorno from curl_errno().
-        if (!empty($this->curlerrorno)) {
-            $this->curlerror = $xml;
-            throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', $xml);
+            if (!empty($this->curlerrorno)) {
+                if ($this->curlerrorno === CURLE_FILESIZE_EXCEEDED) {
+                    throw new \moodle_exception('metadatafetchtoolarge', 'auth_saml2');
+                }
+                $this->curlerror = $xml;
+                throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', $xml);
+            }
+            if (!empty($this->curlinfo['url'])) {
+                $this->require_https((string) $this->curlinfo['url']);
+            }
+            if (empty($this->curlinfo['http_code'])) {
+                throw new \moodle_exception('metadatafetchfailedunknown', 'auth_saml2');
+            }
+            $status = (int) $this->curlinfo['http_code'];
+            if (in_array($status, [301, 302, 303, 307, 308], true)) {
+                if ($redirects === self::MAX_REDIRECTS) {
+                    throw new \moodle_exception('metadatafetchfailedstatus', 'auth_saml2', '', $status);
+                }
+                $location = (string) ($this->curlinfo['redirect_url'] ?? '');
+                if ($location === '') {
+                    foreach ($curl->getResponse() as $name => $value) {
+                        if (strcasecmp((string) $name, 'Location') === 0) {
+                            $location = is_array($value) ? (string) end($value) : (string) $value;
+                            break;
+                        }
+                    }
+                }
+                if ($location === '') {
+                    throw new \moodle_exception('metadatafetchfailedunknown', 'auth_saml2');
+                }
+                $currenturl = $this->resolve_redirect_url($currenturl, $location);
+                $this->require_https($currenturl);
+                continue;
+            }
+            if ($status !== 200) {
+                throw new \moodle_exception('metadatafetchfailedstatus', 'auth_saml2', '', $status);
+            }
+            if (strlen($xml) > self::MAX_METADATA_BYTES) {
+                throw new \moodle_exception('metadatafetchtoolarge', 'auth_saml2');
+            }
+            return $xml;
         }
-        if (
-            !empty($this->curlinfo['url']) &&
-                strtolower((string) parse_url($this->curlinfo['url'], PHP_URL_SCHEME)) !== 'https'
-        ) {
+        throw new \moodle_exception('metadatafetchfailedunknown', 'auth_saml2');
+    }
+
+    /**
+     * Require an HTTPS URL before opening a connection.
+     *
+     * @param string $url URL to validate.
+     */
+    private function require_https(string $url): void {
+        if (strtolower((string) parse_url($url, PHP_URL_SCHEME)) !== 'https') {
             throw new \moodle_exception('idpmetadata_httpsrequired', 'auth_saml2');
         }
-        // If http status code is empty something is wrong.
-        if (empty($this->curlinfo['http_code'])) {
+    }
+
+    /**
+     * Resolve an HTTP Location value against the current HTTPS URL.
+     *
+     * @param string $baseurl Current URL.
+     * @param string $location Redirect Location value.
+     * @return string Resolved URL.
+     */
+    private function resolve_redirect_url(string $baseurl, string $location): string {
+        $location = trim($location);
+        if (parse_url($location, PHP_URL_SCHEME) !== null) {
+            return $location;
+        }
+        $base = parse_url($baseurl);
+        if (!is_array($base) || empty($base['host'])) {
             throw new \moodle_exception('metadatafetchfailedunknown', 'auth_saml2');
         }
-        // If http status code is not 200 then throw an exception.
-        if ($this->curlinfo['http_code'] != 200) {
-            throw new \moodle_exception('metadatafetchfailedstatus', 'auth_saml2', '', $this->curlinfo['http_code']);
+        if (str_starts_with($location, '//')) {
+            return 'https:' . $location;
         }
-        return $xml;
+        $host = str_contains((string) $base['host'], ':') ? '[' . $base['host'] . ']' : $base['host'];
+        $authority = 'https://' . $host;
+        if (isset($base['port'])) {
+            $authority .= ':' . $base['port'];
+        }
+        if (str_starts_with($location, '?')) {
+            return $authority . ($base['path'] ?? '/') . $location;
+        }
+        [$path, $suffix] = array_pad(preg_split('/(?=[?#])/', $location, 2), 2, '');
+        if (!str_starts_with($path, '/')) {
+            $basepath = $base['path'] ?? '/';
+            $path = substr($basepath, 0, (int) strrpos($basepath, '/') + 1) . $path;
+        }
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($segments);
+            } else {
+                $segments[] = $segment;
+            }
+        }
+        return $authority . '/' . implode('/', $segments) . $suffix;
     }
 
     /**

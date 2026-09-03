@@ -122,13 +122,17 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             $result = $manager->review_and_apply(
                 $configvalue,
                 $idps,
-                function () use ($manager, $idps, $configvalue): void {
-                    $this->activate_metadata($idps, function () use ($manager, $idps, $configvalue): void {
-                        if (!$this->write_config_value($configvalue)) {
-                            throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
-                        }
-                        $manager->approve_initial($idps);
-                    });
+                function (callable $markcommitted) use ($manager, $idps, $configvalue): void {
+                    $this->activate_metadata(
+                        $idps,
+                        function () use ($manager, $idps, $configvalue): void {
+                            if (!$this->write_config_value($configvalue)) {
+                                throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
+                            }
+                            $manager->approve_initial($idps);
+                        },
+                        $markcommitted
+                    );
                 }
             );
             if ($result === metadata_trust_manager::PENDING) {
@@ -408,6 +412,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
                     get_string('idpmetadata_badurl', 'auth_saml2', $idp->idpurl)
                 );
             }
+            if (strlen($rawxml) > metadata_fetcher::MAX_METADATA_BYTES) {
+                throw new setting_idpmetadata_exception(get_string('metadatafetchtoolarge', 'auth_saml2'));
+            }
             $idp->set_rawxml($rawxml);
         }
 
@@ -472,6 +479,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             return;
         }
 
+        $this->secure_metadata_directory(dirname($file));
         $attributes = $this->metadata_file_attributes($file, dirname($file));
         $temporary = tempnam(dirname($file), '.metadata-');
         if (
@@ -522,31 +530,38 @@ class setting_idpmetadata extends admin_setting_configtextarea {
     }
 
     /**
-     * Find the stable service group governing Moodle data storage.
-     *
-     * Privileged cron and test processes can create a root-owned child data directory. The first non-root Moodle data
-     * owner identifies the shared service group without transferring file ownership to a guessed runtime account.
+     * Return the explicitly configured setgid metadata-directory group.
      *
      * @param string $directory Metadata directory.
      * @return int|false
      */
     private function metadata_storage_group(string $directory): int|false {
-        $current = $directory;
-        while (true) {
-            $owner = fileowner($current);
-            $group = filegroup($current);
-            if ($owner === false || $group === false) {
-                return false;
-            }
-            if ($owner !== 0) {
-                $record = function_exists('posix_getpwuid') ? posix_getpwuid($owner) : false;
-                return is_array($record) && isset($record['gid']) ? (int) $record['gid'] : $group;
-            }
-            $parent = dirname($current);
-            if ($parent === $current) {
-                return $group;
-            }
-            $current = $parent;
+        $group = filegroup($directory);
+        $permissions = fileperms($directory);
+        if ($group === false || $permissions === false) {
+            return false;
+        }
+        $mode = $permissions & 07777;
+        return ($mode & 02070) === 02070 && ($mode & 0007) === 0 ? $group : false;
+    }
+
+    /**
+     * Harden the metadata directory for shared-group, cross-identity publication.
+     *
+     * @param string $directory Metadata directory.
+     */
+    private function secure_metadata_directory(string $directory): void {
+        $permissions = fileperms($directory);
+        if ($permissions === false) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+        }
+        $mode = (($permissions & 07777) | 02770) & ~0007;
+        $currentmode = $permissions & 07777;
+        if (
+            ($currentmode !== $mode && !chmod($directory, $mode)) ||
+            $this->metadata_storage_group($directory) === false
+        ) {
+            throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }
     }
 

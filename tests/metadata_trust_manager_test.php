@@ -105,7 +105,7 @@ final class metadata_trust_manager_test extends \advanced_testcase {
     }
 
     public function test_pending_proposal_uses_shared_moodle_storage_not_a_runtime_identity_file(): void {
-        global $CFG;
+        global $CFG, $DB;
 
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
@@ -121,8 +121,40 @@ final class metadata_trust_manager_test extends \advanced_testcase {
 
         $path = $CFG->dataroot . '/saml2/metadata.pending.json';
         self::assertFileDoesNotExist($path);
+        self::assertFalse(get_config('auth_saml2', 'metadatapending'));
+        self::assertTrue($DB->record_exists('auth_saml2_truststate', ['name' => 'pending']));
         $review = (new metadata_trust_manager())->get_pending_review();
         self::assertMatchesRegularExpression('/^[a-f0-9]{64}$/', $review['proposalfingerprint']);
+    }
+
+    public function test_pending_and_lock_bounds_are_conservative_and_explicit(): void {
+        self::assertLessThanOrEqual(8 * 1024 * 1024, metadata_trust_manager::MAX_PENDING_BYTES);
+        self::assertLessThanOrEqual(8 * 1024 * 1024, metadata_trust_manager::MAX_JOURNAL_BYTES);
+        self::assertGreaterThan(300, metadata_trust_manager::LOCK_LIFETIME);
+    }
+
+    public function test_oversized_pending_proposal_is_rejected_without_replacing_active_trust(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new idp_parser())->parse($xml));
+        $approved = get_config('auth_saml2', 'metadataapproved');
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'oversizedPendingCertificate=', $xml);
+        $changed = str_replace('</EntitiesDescriptor>', str_repeat(' ', 5 * 1024 * 1024) . '</EntitiesDescriptor>', $changed);
+
+        try {
+            $manager->review($changed, (new idp_parser())->parse($changed));
+            self::fail('Oversized pending state must fail closed.');
+        } catch (\moodle_exception $exception) {
+            self::assertSame(get_string('idpmetadata_pendingwritefailed', 'auth_saml2'), $exception->getMessage());
+        }
+
+        self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($approved, get_config('auth_saml2', 'metadataapproved'));
+        self::assertFalse($DB->record_exists('auth_saml2_truststate', ['name' => 'pending']));
     }
 
     public function test_pending_review_binds_the_summary_and_form_fingerprint_to_one_proposal(): void {
@@ -335,6 +367,72 @@ final class metadata_trust_manager_test extends \advanced_testcase {
         self::assertFalse(get_config('auth_saml2', 'metadataactivationjournal'));
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('accepted_activation_crash_states')]
+    public function test_auth_bootstrap_recovers_initial_and_unchanged_activation_before_database_commit(
+        bool $initial
+    ): void {
+        global $CFG, $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $livefile = $directory . '/' . md5('xml') . '.idp.xml';
+        $snapshot = [];
+        if (!$initial) {
+            set_config('idpmetadata', $xml, 'auth_saml2');
+            file_put_contents($livefile, trim($xml));
+            chmod($livefile, 0640);
+            $snapshot[$livefile] = [
+                'contents' => trim($xml),
+                'owner' => fileowner($livefile),
+                'group' => filegroup($livefile),
+                'mode' => 0640,
+            ];
+        } else {
+            unset_config('idpmetadata', 'auth_saml2');
+        }
+        $replacement = str_replace('Example.com test IDP', 'Interrupted accepted metadata', $xml);
+        file_put_contents($livefile, trim($replacement));
+        $DB->insert_record('auth_saml2_truststate', (object) [
+            'name' => 'activation',
+            'value' => json_encode([
+                'state' => 'prepared',
+                'proposalfingerprint' => hash('sha256', $replacement),
+                'requirespending' => false,
+                'clearpending' => true,
+                'configfingerprint' => hash('sha256', $replacement),
+                'descriptorfingerprint' => hash('sha256', 'descriptor'),
+                'files' => $snapshot,
+            ], JSON_UNESCAPED_SLASHES),
+            'timemodified' => time(),
+        ]);
+
+        require_once($CFG->dirroot . '/auth/saml2/auth.php');
+        new \auth_plugin_saml2();
+
+        self::assertFalse($DB->record_exists('auth_saml2_truststate', ['name' => 'activation']));
+        if ($initial) {
+            self::assertFileDoesNotExist($livefile);
+            self::assertFalse(get_config('auth_saml2', 'idpmetadata'));
+        } else {
+            self::assertSame(trim($xml), file_get_contents($livefile));
+            self::assertSame($xml, get_config('auth_saml2', 'idpmetadata'));
+        }
+    }
+
+    /**
+     * Activation classes that must share durable recovery.
+     *
+     * @return array
+     */
+    public static function accepted_activation_crash_states(): array {
+        return [
+            'initial write' => [true],
+            'descriptor-unchanged write' => [false],
+        ];
+    }
+
     public function test_committed_activation_journal_finishes_cleanup_without_rolling_back_live_metadata(): void {
         global $CFG;
 
@@ -371,6 +469,8 @@ final class metadata_trust_manager_test extends \advanced_testcase {
     }
 
     public function test_committed_activation_journal_cannot_consume_a_replaced_pending_proposal(): void {
+        global $DB;
+
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
         set_config('idpmetadata', $xml, 'auth_saml2');
@@ -405,7 +505,10 @@ final class metadata_trust_manager_test extends \advanced_testcase {
             self::assertSame(get_string('metadataapprovalproposalchanged', 'auth_saml2'), $exception->getMessage());
         }
 
-        $stillpending = json_decode((string) get_config('auth_saml2', 'metadatapending'), true);
+        $stillpending = json_decode(
+            $DB->get_field('auth_saml2_truststate', 'value', ['name' => 'pending']),
+            true
+        );
         self::assertSame($replacementfingerprint, $stillpending['proposalfingerprint']);
         self::assertNotFalse(get_config('auth_saml2', 'metadataactivationjournal'));
     }
@@ -429,6 +532,52 @@ final class metadata_trust_manager_test extends \advanced_testcase {
         );
         self::assertFalse($manager->get_pending_summary()['signingkeys']);
         self::assertTrue($manager->get_pending_summary()['endpoints']);
+    }
+
+    public function test_endpoint_index_and_default_semantics_are_part_of_trust(): void {
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        $baseline = str_replace(
+            '<SingleSignOnService ',
+            '<SingleSignOnService index="1" isDefault="true" ',
+            $xml
+        );
+        set_config('idpmetadata', $baseline, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $manager->bootstrap_existing_inline($baseline, (new idp_parser())->parse($baseline));
+        $changed = str_replace('index="1" isDefault="true"', 'index="2" isDefault="false"', $baseline);
+
+        self::assertSame(
+            metadata_trust_manager::PENDING,
+            $manager->review($changed, (new idp_parser())->parse($changed))
+        );
+        self::assertTrue($manager->get_pending_summary()['endpoints']);
+    }
+
+    public function test_restoring_approved_metadata_retires_an_older_dangerous_proposal(): void {
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new metadata_trust_manager();
+        $idps = (new idp_parser())->parse($xml);
+        $manager->bootstrap_existing_inline($xml, $idps);
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'retiredDangerousCertificate=', $xml);
+        self::assertSame(
+            metadata_trust_manager::PENDING,
+            $manager->review($changed, (new idp_parser())->parse($changed))
+        );
+
+        $activated = false;
+        self::assertSame(
+            metadata_trust_manager::UNCHANGED,
+            $manager->review_and_apply($xml, $idps, static function (callable $markcommitted) use (&$activated): void {
+                $activated = true;
+                $markcommitted();
+            })
+        );
+
+        self::assertTrue($activated);
+        self::assertFalse($manager->has_pending());
     }
 
     public function test_moving_signing_keys_between_entities_requires_approval(): void {

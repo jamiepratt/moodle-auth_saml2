@@ -28,6 +28,7 @@ use auth_saml2\admin\setting_idpmetadata;
 use auth_saml2\idp_parser;
 use auth_saml2\metadata_fetcher;
 use auth_saml2\metadata_parser;
+use auth_saml2\metadata_trust_manager;
 use auth_saml2\metadata_writer;
 use moodle_exception;
 
@@ -79,6 +80,7 @@ class metadata_refresh extends \core\task\scheduled_task {
      * @param bool $force
      */
     public function execute($force = false) {
+        (new metadata_trust_manager())->recover_if_needed();
         $config = get_config('auth_saml2');
 
         if (empty($config->idpmetadata)) {

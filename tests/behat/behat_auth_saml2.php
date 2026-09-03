@@ -262,6 +262,16 @@ class behat_auth_saml2 extends behat_base {
      */
     public function the_mock_saml_idp_is_configured() {
         global $CFG;
+        $metadatadirectory = $CFG->dataroot . '/saml2';
+        make_writable_directory($metadatadirectory);
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0 && function_exists('posix_getpwnam')) {
+            $webidentity = posix_getpwnam('www-data');
+            if (is_array($webidentity) && isset($webidentity['gid'])) {
+                if (!chgrp($metadatadirectory, (int) $webidentity['gid']) || !chmod($metadatadirectory, 02770)) {
+                    throw new \RuntimeException('Could not configure the synthetic shared SAML metadata group.');
+                }
+            }
+        }
         $cert = file_get_contents(__DIR__ . '/../fixtures/mockidp/mock.crt');
         $cert = preg_replace('~(-----(BEGIN|END) CERTIFICATE-----)|\n~', '', $cert);
         $baseurl = $CFG->wwwroot . '/auth/saml2/tests/fixtures/mockidp';

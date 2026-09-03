@@ -27,6 +27,7 @@ defined('MOODLE_INTERNAL') || die();
 $port = (int) ($argv[2] ?? 0);
 $certificate = $argv[3] ?? '';
 $privatekey = $argv[4] ?? '';
+$httpport = (int) ($argv[5] ?? 0);
 $metadata = file_get_contents(__DIR__ . '/metadata.xml');
 if ($port < 1 || $metadata === false || !is_readable($certificate) || !is_readable($privatekey)) {
     fwrite(STDERR, "Invalid synthetic TLS server arguments.\n");
@@ -51,20 +52,51 @@ if ($server === false) {
 }
 fwrite(STDOUT, "READY\n");
 fflush(STDOUT);
-$connection = stream_socket_accept($server, 10);
-if ($connection === false) {
-    while (($opensslerror = openssl_error_string()) !== false) {
-        fwrite(STDERR, $opensslerror . "\n");
+for ($requestnumber = 0; $requestnumber < 10; $requestnumber++) {
+    $connection = stream_socket_accept($server, 3);
+    if ($connection === false) {
+        if ($requestnumber === 0) {
+            while (($opensslerror = openssl_error_string()) !== false) {
+                fwrite(STDERR, $opensslerror . "\n");
+            }
+            fclose($server);
+            exit(2);
+        }
+        break;
     }
-    fclose($server);
-    exit(2);
+    $requestline = trim((string) fgets($connection));
+    $requestheaders = '';
+    while (($line = fgets($connection)) !== false && trim($line) !== '') {
+        $requestheaders .= $line;
+    }
+    $path = explode(' ', $requestline)[1] ?? '/';
+    $status = '200 OK';
+    $extraheaders = 'Content-Type: application/samlmetadata+xml' . "\r\n";
+    $body = $metadata;
+    if ($path === '/downgrade') {
+        $status = '302 Found';
+        $extraheaders = "Location: http://localhost:{$httpport}/upgrade\r\n";
+        $body = '';
+    } else if ($path === '/relative/start') {
+        $status = '302 Found';
+        $extraheaders = "Location: ../metadata.xml\r\n";
+        $body = '';
+    } else if ($path === '/absolute') {
+        $status = '302 Found';
+        $extraheaders = "Location: https://localhost:{$port}/metadata.xml\r\n";
+        $body = '';
+    } else if ($path === '/cycle-a') {
+        $status = '302 Found';
+        $extraheaders = "Location: /cycle-b\r\n";
+        $body = '';
+    } else if ($path === '/cycle-b') {
+        $status = '302 Found';
+        $extraheaders = "Location: /cycle-a\r\n";
+        $body = '';
+    }
+    $headers = "HTTP/1.1 {$status}\r\n{$extraheaders}" .
+        'Content-Length: ' . strlen($body) . "\r\nConnection: close\r\n\r\n";
+    fwrite($connection, $headers . $body);
+    fclose($connection);
 }
-$requestheaders = '';
-while (($line = fgets($connection)) !== false && trim($line) !== '') {
-    $requestheaders .= $line;
-}
-$headers = "HTTP/1.1 200 OK\r\nContent-Type: application/samlmetadata+xml\r\n" .
-    'Content-Length: ' . strlen($metadata) . "\r\nConnection: close\r\n\r\n";
-fwrite($connection, $headers . $metadata);
-fclose($connection);
 fclose($server);

@@ -438,25 +438,51 @@ function xmldb_auth_saml2_upgrade($oldversion) {
 
     if ($oldversion < 2026090301) {
         // Move any proposal left by the short-lived file-backed implementation into shared Moodle storage.
-        $legacypaths = [
-            $CFG->dataroot . '/saml2/metadata.pending.json',
-            $CFG->dataroot . '/saml2/metadata.pending.json.activating',
-        ];
+        $pendingpath = $CFG->dataroot . '/saml2/metadata.pending.json';
+        $activatingpath = $pendingpath . '.activating';
+        $legacypaths = [$pendingpath, $activatingpath];
         $existingpaths = array_values(array_filter($legacypaths, 'file_exists'));
         if (count($existingpaths) > 1) {
             throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
         }
         if ($existingpaths) {
             $legacy = file_get_contents($existingpaths[0]);
-            if ($legacy === false || !is_array(json_decode($legacy, true))) {
+            $payload = $legacy === false ? null : json_decode($legacy, true);
+            if (!is_array($payload)) {
                 throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
             }
-            $current = get_config('auth_saml2', 'metadatapending');
-            if ($current !== false && !hash_equals((string) $current, $legacy)) {
-                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
-            }
-            if ($current === false && !set_config('metadatapending', $legacy, 'auth_saml2')) {
-                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            if ($existingpaths[0] === $activatingpath) {
+                // The old marker had no rollback snapshot. Retire it only when commit is independently provable.
+                $approved = json_decode((string) get_config('auth_saml2', 'metadataapproved'), true);
+                $completepayload = isset(
+                    $payload['configvalue'],
+                    $payload['configfingerprint'],
+                    $payload['descriptor'],
+                    $payload['idps']
+                );
+                $committed = $completepayload &&
+                    hash_equals($payload['configfingerprint'], hash('sha256', (string) get_config('auth_saml2', 'idpmetadata'))) &&
+                    hash_equals($payload['descriptor']['fingerprint'] ?? '', $approved['fingerprint'] ?? '');
+                foreach ($payload['idps'] ?? [] as $idp) {
+                    $livepath = $CFG->dataroot . '/saml2/' . md5((string) ($idp['url'] ?? '')) . '.idp.xml';
+                    $live = is_file($livepath) ? file_get_contents($livepath) : false;
+                    if ($live === false || !hash_equals(hash('sha256', (string) ($idp['xml'] ?? '')), hash('sha256', $live))) {
+                        $committed = false;
+                        break;
+                    }
+                }
+                if (!$committed) {
+                    // Leave the marker quarantined for manual recovery. Never present it as an approvable proposal.
+                    throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+                }
+            } else {
+                $current = get_config('auth_saml2', 'metadatapending');
+                if ($current !== false && !hash_equals((string) $current, $legacy)) {
+                    throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+                }
+                if ($current === false && !set_config('metadatapending', $legacy, 'auth_saml2')) {
+                    throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+                }
             }
             if (!unlink($existingpaths[0])) {
                 throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
@@ -464,6 +490,46 @@ function xmldb_auth_saml2_upgrade($oldversion) {
         }
 
         upgrade_plugin_savepoint(true, 2026090301, 'auth', 'saml2');
+    }
+
+    if ($oldversion < 2026090302) {
+        $dbman = $DB->get_manager();
+        $table = new xmldb_table('auth_saml2_truststate');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE);
+        $table->add_field('name', XMLDB_TYPE_CHAR, '32', null, XMLDB_NOTNULL);
+        $table->add_field('value', XMLDB_TYPE_TEXT, null, null, XMLDB_NOTNULL);
+        $table->add_field('timemodified', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL);
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $table->add_index('name', XMLDB_INDEX_UNIQUE, ['name']);
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        foreach (['metadatapending' => 'pending', 'metadataactivationjournal' => 'activation'] as $config => $name) {
+            $value = get_config('auth_saml2', $config);
+            if ($value === false) {
+                continue;
+            }
+            if (strlen((string) $value) > 8 * 1024 * 1024) {
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            $existing = $DB->get_field('auth_saml2_truststate', 'value', ['name' => $name]);
+            if ($existing !== false && !hash_equals((string) $existing, (string) $value)) {
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            if ($existing === false) {
+                $DB->insert_record('auth_saml2_truststate', (object) [
+                    'name' => $name,
+                    'value' => $value,
+                    'timemodified' => time(),
+                ]);
+            }
+            if (!unset_config($config, 'auth_saml2')) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026090302, 'auth', 'saml2');
     }
 
     return true;

@@ -123,6 +123,13 @@ $CFG->auth_saml2_store = '\\auth_saml2\\redis_store'; # Use an alternate store
 $CFG->auth_saml2_redis_server = ''; # Required for the redis_store above
 ```
 
+Remote IdP metadata retrieval permits HTTPS only, checks every redirect hop,
+follows at most five redirects, and accepts at most 2 MiB of XML. Staged
+proposals and activation recovery journals are stored outside the plugin config
+cache and are each limited to 8 MiB. Live metadata uses the actual group of the
+setgid `moodledata/saml2` directory with owner/group-only access; web and cron
+identities must share that configured group.
+
 
 ## Testing
 

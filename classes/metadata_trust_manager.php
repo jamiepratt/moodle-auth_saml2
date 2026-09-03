@@ -29,6 +29,18 @@ use DOMXPath;
  * @license http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class metadata_trust_manager {
+    /** @var int Current-process lock depth, preventing bootstrap self-recovery during activation. */
+    private static int $lockdepth = 0;
+
+    /** Maximum serialized staged proposal size (8 MiB). */
+    public const MAX_PENDING_BYTES = 8 * 1024 * 1024;
+
+    /** Maximum serialized activation recovery journal size (8 MiB). */
+    public const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
+
+    /** Lock lifetime for the bounded local activation critical section. */
+    public const LOCK_LIFETIME = 900;
+
     /** Approval by the designated Moodle SAML service owner. */
     public const AUTHORITY_OWNER = 'serviceowner';
 
@@ -49,6 +61,12 @@ class metadata_trust_manager {
 
     /** Config key containing durable activation recovery state. */
     private const ACTIVATION_CONFIG = 'metadataactivationjournal';
+
+    /** Dedicated pending-state row name, excluded from plugin-wide config cache. */
+    private const PENDING_STATE = 'pending';
+
+    /** Dedicated activation-state row name, excluded from plugin-wide config cache. */
+    private const ACTIVATION_STATE = 'activation';
 
     /**
      * Seed trust for already-installed inline XML without changing live metadata.
@@ -97,7 +115,7 @@ class metadata_trust_manager {
      * @return bool
      */
     public function has_pending(): bool {
-        return get_config('auth_saml2', self::PENDING_CONFIG) !== false;
+        return $this->read_state(self::PENDING_STATE, self::PENDING_CONFIG) !== null;
     }
 
     /**
@@ -105,6 +123,18 @@ class metadata_trust_manager {
      */
     public function recover(): void {
         $this->with_lock(static fn() => null);
+    }
+
+    /**
+     * Recover only when durable state exists, avoiding lock acquisition on the normal path.
+     */
+    public function recover_if_needed(): void {
+        if (self::$lockdepth > 0) {
+            return;
+        }
+        if ($this->read_state(self::ACTIVATION_STATE, self::ACTIVATION_CONFIG) !== null) {
+            $this->recover();
+        }
     }
 
     /**
@@ -130,7 +160,14 @@ class metadata_trust_manager {
         return $this->with_lock(function () use ($configvalue, $idps, $activate): string {
             $result = $this->review_locked($configvalue, $idps);
             if ($result === self::UNCHANGED) {
-                $activate();
+                $descriptor = $this->describe($idps);
+                $idppayload = $this->serialize_idps($idps);
+                $target = [
+                    'configvalue' => $configvalue,
+                    'descriptor' => $descriptor,
+                    'proposalfingerprint' => $this->proposal_fingerprint($configvalue, $idppayload, $descriptor),
+                ];
+                $this->activate_locked($target, $activate, false, true);
             }
             return $result;
         });
@@ -171,14 +208,7 @@ class metadata_trust_manager {
 
         $summary = $this->difference_summary(is_array($approved) ? $approved : [], $proposed);
         $currentpending = $this->read_pending();
-        $idppayload = array_map(static function (idp_data $idp): array {
-            return [
-                'name' => $idp->idpname,
-                'url' => $idp->idpurl,
-                'icon' => $idp->idpicon,
-                'xml' => $idp->get_rawxml(),
-            ];
-        }, $idps);
+        $idppayload = $this->serialize_idps($idps);
         $payload = [
             'configvalue' => $configvalue,
             'configfingerprint' => hash('sha256', $configvalue),
@@ -295,14 +325,16 @@ class metadata_trust_manager {
      */
     public function with_lock(callable $operation): mixed {
         $factory = \core\lock\lock_config::get_lock_factory('auth_saml2');
-        $lock = $factory->get_lock('metadata-trust', 10, 300);
+        $lock = $factory->get_lock('metadata-trust', 10, self::LOCK_LIFETIME);
         if ($lock === false) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
+        self::$lockdepth++;
         try {
             $this->recover_activation_locked();
             return $operation();
         } finally {
+            self::$lockdepth--;
             if (!$lock->release()) {
                 debugging('The SAML metadata trust lock could not be released.', DEBUG_DEVELOPER);
             }
@@ -342,23 +374,45 @@ class metadata_trust_manager {
     public function activate_pending(string $expectedfingerprint, callable $activate): void {
         $this->with_lock(function () use ($expectedfingerprint, $activate): void {
             $pending = $this->get_pending_data($expectedfingerprint);
-            $this->prepare_activation_locked($pending);
-            $markcommitted = function () use ($pending): void {
-                $this->mark_activation_committed_locked($pending['proposalfingerprint']);
-            };
-            try {
-                $activate($pending, $markcommitted);
-                $journal = $this->read_activation_journal();
-                if (($journal['state'] ?? '') !== 'committed') {
-                    $this->recover_activation_locked();
-                    throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
-                }
-                $this->recover_activation_locked();
-            } catch (\Throwable $exception) {
-                $this->recover_activation_locked();
-                throw $exception;
-            }
+            $this->activate_locked(
+                $pending,
+                static fn(callable $markcommitted) => $activate($pending, $markcommitted),
+                true,
+                true
+            );
         });
+    }
+
+    /**
+     * Journal every accepted activation, including initial and descriptor-unchanged writes.
+     *
+     * @param array $target Activation target.
+     * @param callable $activate Callback receiving the transactional commit marker.
+     * @param bool $requirespending Whether recovery must preserve an exact staged proposal.
+     * @param bool $clearpending Whether success retires any older proposal.
+     */
+    private function activate_locked(
+        array $target,
+        callable $activate,
+        bool $requirespending,
+        bool $clearpending
+    ): void {
+        $this->prepare_activation_locked($target, $requirespending, $clearpending);
+        $markcommitted = function () use ($target): void {
+            $this->mark_activation_committed_locked($target['proposalfingerprint']);
+        };
+        try {
+            $activate($markcommitted);
+            $journal = $this->read_activation_journal();
+            if (($journal['state'] ?? '') !== 'committed') {
+                $this->recover_activation_locked();
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            $this->recover_activation_locked();
+        } catch (\Throwable $exception) {
+            $this->recover_activation_locked();
+            throw $exception;
+        }
     }
 
     /**
@@ -368,7 +422,17 @@ class metadata_trust_manager {
      * @return bool
      */
     protected function delete_state(string $name): bool {
-        return unset_config($name, 'auth_saml2');
+        global $DB;
+
+        $statename = $name === self::PENDING_CONFIG ? self::PENDING_STATE : self::ACTIVATION_STATE;
+        $table = new \xmldb_table('auth_saml2_truststate');
+        if ($DB->get_manager()->table_exists($table)) {
+            $DB->delete_records('auth_saml2_truststate', ['name' => $statename]);
+        }
+        if (get_config('auth_saml2', $name) !== false) {
+            return unset_config($name, 'auth_saml2');
+        }
+        return true;
     }
 
     /**
@@ -376,16 +440,18 @@ class metadata_trust_manager {
      *
      * @param array $pending Verified pending proposal.
      */
-    private function prepare_activation_locked(array $pending): void {
+    private function prepare_activation_locked(array $pending, bool $requirespending, bool $clearpending): void {
         $journal = [
             'state' => 'prepared',
             'proposalfingerprint' => $pending['proposalfingerprint'],
+            'requirespending' => $requirespending,
+            'clearpending' => $clearpending,
             'configfingerprint' => hash('sha256', $pending['configvalue']),
             'descriptorfingerprint' => $pending['descriptor']['fingerprint'],
             'files' => (new setting_idpmetadata())->snapshot_metadata_files(),
         ];
         $encoded = json_encode($journal, JSON_UNESCAPED_SLASHES);
-        if ($encoded === false || !set_config(self::ACTIVATION_CONFIG, $encoded, 'auth_saml2')) {
+        if ($encoded === false || !$this->write_state(self::ACTIVATION_STATE, $encoded, self::MAX_JOURNAL_BYTES)) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
     }
@@ -405,7 +471,7 @@ class metadata_trust_manager {
         }
         $journal['state'] = 'committed';
         $encoded = json_encode($journal, JSON_UNESCAPED_SLASHES);
-        if ($encoded === false || !set_config(self::ACTIVATION_CONFIG, $encoded, 'auth_saml2')) {
+        if ($encoded === false || !$this->write_state(self::ACTIVATION_STATE, $encoded, self::MAX_JOURNAL_BYTES)) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
     }
@@ -416,13 +482,8 @@ class metadata_trust_manager {
      * @return array|null
      */
     private function read_activation_journal(): ?array {
-        global $DB;
-
-        $encoded = $DB->get_field('config_plugins', 'value', [
-            'plugin' => 'auth_saml2',
-            'name' => self::ACTIVATION_CONFIG,
-        ]);
-        if ($encoded === false) {
+        $encoded = $this->read_state(self::ACTIVATION_STATE, self::ACTIVATION_CONFIG);
+        if ($encoded === null) {
             return null;
         }
         $journal = json_decode((string) $encoded, true);
@@ -448,12 +509,14 @@ class metadata_trust_manager {
             throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
         }
         if ($journal['state'] === 'prepared') {
-            $pending = $this->get_pending_data($journal['proposalfingerprint']);
-            if (
-                !hash_equals($journal['descriptorfingerprint'] ?? '', $pending['descriptor']['fingerprint']) ||
-                !hash_equals($journal['configfingerprint'] ?? '', hash('sha256', $pending['configvalue']))
-            ) {
-                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            if (!empty($journal['requirespending']) || !array_key_exists('requirespending', $journal)) {
+                $pending = $this->get_pending_data($journal['proposalfingerprint']);
+                if (
+                    !hash_equals($journal['descriptorfingerprint'] ?? '', $pending['descriptor']['fingerprint']) ||
+                    !hash_equals($journal['configfingerprint'] ?? '', hash('sha256', $pending['configvalue']))
+                ) {
+                    throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+                }
             }
             (new setting_idpmetadata())->restore_metadata_files($journal['files']);
             if (!$this->delete_state(self::ACTIVATION_CONFIG)) {
@@ -462,7 +525,8 @@ class metadata_trust_manager {
             return;
         }
 
-        if ($this->has_pending()) {
+        $requirespending = !array_key_exists('requirespending', $journal) || !empty($journal['requirespending']);
+        if ($requirespending && $this->has_pending()) {
             $this->get_pending_data($journal['proposalfingerprint']);
         }
 
@@ -482,7 +546,8 @@ class metadata_trust_manager {
         ) {
             throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
         }
-        if ($this->has_pending() && !$this->delete_state(self::PENDING_CONFIG)) {
+        $clearpending = !array_key_exists('clearpending', $journal) || !empty($journal['clearpending']);
+        if ($clearpending && $this->has_pending() && !$this->delete_state(self::PENDING_CONFIG)) {
             debugging('The consumed SAML metadata proposal could not be removed.', DEBUG_DEVELOPER);
             return;
         }
@@ -565,6 +630,8 @@ class metadata_trust_manager {
                         'binding' => $endpoint->getAttribute('Binding'),
                         'location' => $endpoint->getAttribute('Location'),
                         'responselocation' => $endpoint->getAttribute('ResponseLocation'),
+                        'index' => $endpoint->getAttribute('index'),
+                        'isdefault' => $endpoint->getAttribute('isDefault'),
                     ];
                 }
 
@@ -631,6 +698,23 @@ class metadata_trust_manager {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
         return hash('sha256', $encoded);
+    }
+
+    /**
+     * Serialize resolved IdP sources into a durable bounded proposal.
+     *
+     * @param idp_data[] $idps Resolved sources.
+     * @return array Serialized sources.
+     */
+    private function serialize_idps(array $idps): array {
+        return array_map(static function (idp_data $idp): array {
+            return [
+                'name' => $idp->idpname,
+                'url' => $idp->idpurl,
+                'icon' => $idp->idpicon,
+                'xml' => $idp->get_rawxml(),
+            ];
+        }, $idps);
     }
 
     /**
@@ -728,8 +812,8 @@ class metadata_trust_manager {
      * @return array|null
      */
     private function read_pending(): ?array {
-        $contents = get_config('auth_saml2', self::PENDING_CONFIG);
-        if ($contents === false) {
+        $contents = $this->read_state(self::PENDING_STATE, self::PENDING_CONFIG);
+        if ($contents === null) {
             return null;
         }
         $payload = json_decode((string) $contents, true);
@@ -746,8 +830,61 @@ class metadata_trust_manager {
      */
     private function write_pending(array $payload): void {
         $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES);
-        if ($encoded === false || !set_config(self::PENDING_CONFIG, $encoded, 'auth_saml2')) {
+        if ($encoded === false || !$this->write_state(self::PENDING_STATE, $encoded, self::MAX_PENDING_BYTES)) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
+    }
+
+    /**
+     * Read dedicated state, accepting a legacy config value until the upgrade migrates it.
+     *
+     * @param string $name State row name.
+     * @param string $legacyconfig Legacy config key.
+     * @return string|null Stored value.
+     */
+    private function read_state(string $name, string $legacyconfig): ?string {
+        global $DB;
+
+        try {
+            $value = $DB->get_field('auth_saml2_truststate', 'value', ['name' => $name]);
+        } catch (\dml_exception $exception) {
+            $table = new \xmldb_table('auth_saml2_truststate');
+            if ($DB->get_manager()->table_exists($table)) {
+                throw $exception;
+            }
+            $value = false;
+        }
+        if ($value !== false) {
+            return (string) $value;
+        }
+        $legacy = get_config('auth_saml2', $legacyconfig);
+        return $legacy === false ? null : (string) $legacy;
+    }
+
+    /**
+     * Persist bounded state outside the plugin-wide config cache.
+     *
+     * @param string $name State row name.
+     * @param string $value Encoded state.
+     * @param int $maximum Maximum encoded bytes.
+     * @return bool Success.
+     */
+    private function write_state(string $name, string $value, int $maximum): bool {
+        global $DB;
+
+        if (strlen($value) > $maximum) {
+            return false;
+        }
+        $record = $DB->get_record('auth_saml2_truststate', ['name' => $name]);
+        if ($record) {
+            $record->value = $value;
+            $record->timemodified = time();
+            return $DB->update_record('auth_saml2_truststate', $record);
+        }
+        return (bool) $DB->insert_record('auth_saml2_truststate', (object) [
+            'name' => $name,
+            'value' => $value,
+            'timemodified' => time(),
+        ]);
     }
 }

@@ -102,7 +102,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
 
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
-        self::assertEmpty(self::$config->write_setting($xml));
+        self::assertSame('', self::$config->write_setting($xml));
         $file = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         $livehash = hash_file('sha256', $file);
         $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'differentSigningCertificate=', $xml);
@@ -217,13 +217,12 @@ final class setting_idpmetadata_test extends \advanced_testcase {
 
         $this->resetAfterTest();
         $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
-        self::assertEmpty(self::$config->write_setting($xml));
+        self::assertSame('', self::$config->write_setting($xml));
         $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         clearstatcache(true, $livefile);
         self::assertSame(0640, fileperms($livefile) & 0777);
         self::assertSame(posix_geteuid(), fileowner($livefile));
-        $dataowner = posix_getpwuid(fileowner($CFG->dataroot));
-        self::assertSame($dataowner['gid'], filegroup($livefile));
+        self::assertSame(filegroup(dirname($livefile)), filegroup($livefile));
 
         chmod($livefile, 0666);
         $changed = str_replace('Example.com test IDP', 'Hardened display name', $xml);
@@ -283,6 +282,67 @@ final class setting_idpmetadata_test extends \advanced_testcase {
             self::assertTrue(posix_setegid($sharedgid));
             self::assertTrue(posix_seteuid(33));
             self::assertSame('shared metadata', file_get_contents($temporary));
+        } finally {
+            posix_seteuid(0);
+            posix_setegid($originalgid);
+        }
+    }
+
+    public function test_metadata_group_is_the_actual_setgid_directory_group(): void {
+        global $CFG;
+
+        if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+            $this->markTestSkipped('Selecting a synthetic group requires a root test process.');
+        }
+        $directory = $CFG->dataroot . '/saml2/group-selection-' . random_string(10);
+        self::assertTrue(mkdir($directory, 02770, true));
+        self::assertTrue(chgrp($directory, 65534));
+        self::assertTrue(chmod($directory, 02770));
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'metadata_storage_group');
+
+        self::assertSame(65534, $method->invoke(self::$config, $directory));
+    }
+
+    public function test_distinct_nonroot_writer_activates_through_shared_setgid_directory(): void {
+        global $CFG;
+
+        if (
+            !function_exists('posix_seteuid') ||
+            !function_exists('posix_setegid') ||
+            posix_geteuid() !== 0
+        ) {
+            $this->markTestSkipped('Changing effective identities requires a root POSIX test process.');
+        }
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertSame('', self::$config->write_setting($xml));
+        $directory = $CFG->dataroot . '/saml2';
+        $livefile = $directory . '/' . md5('xml') . '.idp.xml';
+        $sharedgid = 65534;
+        self::assertTrue(chgrp($directory, $sharedgid));
+        self::assertTrue(chmod($directory, 02770));
+        self::assertTrue(chgrp($livefile, $sharedgid));
+        self::assertTrue(chmod($livefile, 0640));
+        $changed = str_replace('Example.com test IDP', 'Shared writer display name', $xml);
+        $originalgid = posix_getegid();
+
+        try {
+            self::assertTrue(posix_setegid($sharedgid));
+            self::assertTrue(posix_seteuid(34));
+            $result = self::$config->write_setting($changed);
+        } finally {
+            posix_seteuid(0);
+            posix_setegid($originalgid);
+        }
+
+        self::assertSame('', $result);
+        clearstatcache(true, $livefile);
+        self::assertSame(34, fileowner($livefile));
+        self::assertSame($sharedgid, filegroup($livefile));
+        try {
+            self::assertTrue(posix_setegid($sharedgid));
+            self::assertTrue(posix_seteuid(33));
+            self::assertSame(trim($changed), file_get_contents($livefile));
         } finally {
             posix_seteuid(0);
             posix_setegid($originalgid);
@@ -716,8 +776,60 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertFalse($downloaded);
     }
 
+    public function test_oversized_remote_metadata_cannot_change_active_state(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        self::assertEmpty(self::$config->write_setting($xml));
+        $before = [
+            'config' => get_config('auth_saml2', 'idpmetadata'),
+            'approved' => get_config('auth_saml2', 'metadataapproved'),
+            'records' => $DB->get_records('auth_saml2_idps', null, 'id'),
+            'files' => $this->metadata_file_hashes(),
+        ];
+        $setting = new setting_idpmetadata(static function (): string {
+            return str_repeat('x', metadata_fetcher::MAX_METADATA_BYTES + 1);
+        });
+
+        self::assertSame(
+            get_string('metadatafetchtoolarge', 'auth_saml2'),
+            $setting->write_setting('https://idp.example.test/oversized.xml')
+        );
+        self::assertSame($before['config'], get_config('auth_saml2', 'idpmetadata'));
+        self::assertSame($before['approved'], get_config('auth_saml2', 'metadataapproved'));
+        self::assertEquals($before['records'], $DB->get_records('auth_saml2_idps', null, 'id'));
+        self::assertSame($before['files'], $this->metadata_file_hashes());
+        self::assertFalse((new metadata_trust_manager())->has_pending());
+    }
+
+    public function test_oversized_activation_journal_cannot_replace_live_metadata(): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        unset_config('idpmetadata', 'auth_saml2');
+        unset_config('metadataapproved', 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $largefile = $directory . '/oversized-snapshot.idp.xml';
+        file_put_contents($largefile, str_repeat('x', metadata_trust_manager::MAX_JOURNAL_BYTES + 1));
+        $beforehash = hash_file('sha256', $largefile);
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+
+        self::assertSame(
+            get_string('idpmetadata_pendingwritefailed', 'auth_saml2'),
+            self::$config->write_setting($xml)
+        );
+        self::assertFalse(get_config('auth_saml2', 'idpmetadata'));
+        self::assertFalse(get_config('auth_saml2', 'metadataapproved'));
+        self::assertSame($beforehash, hash_file('sha256', $largefile));
+    }
+
     public function test_it_returns_error_if_metadata_url_is_not_valid(): void {
-        $error = self::$config->validate('https://invalid.url.metadata.test');
+        $config = new setting_idpmetadata(static function (string $url): string {
+            throw new \moodle_exception('metadatafetchfailed', 'auth_saml2', '', $url);
+        });
+        $error = $config->validate('https://invalid.url.metadata.test');
         if (method_exists($this, 'assertStringContainsString')) {
             self::assertStringContainsString('Metadata fetch failed', $error);
             self::assertStringContainsString('invalid.url.metadata.test', $error);

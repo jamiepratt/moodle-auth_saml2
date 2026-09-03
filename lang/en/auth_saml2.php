@@ -171,6 +171,7 @@ $string['metadataapprovalwarning'] = 'Activate only after the Moodle SAML servic
 $string['metadatafetchfailed'] = 'Metadata fetch failed: {$a}';
 $string['metadatafetchfailedstatus'] = 'Metadata fetch failed: Status code {$a}';
 $string['metadatafetchfailedunknown'] = 'Metadata fetch failed: Unknown cURL error';
+$string['metadatafetchtoolarge'] = 'Metadata fetch failed: the response exceeds the 2 MiB safety limit';
 $string['moodleidpdescription'] = 'Settings for Moodle as an Identity Provider for other services.';
 $string['moodleidpenabled'] = 'Enable IDP';
 $string['moodleidpenabled_error'] = 'Moodle IDP is not enabled. Check Settings.';
