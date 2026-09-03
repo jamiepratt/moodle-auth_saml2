@@ -132,4 +132,44 @@ final class upgrade_test extends \advanced_testcase {
         file_put_contents($file, $xml);
         return $file;
     }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacy_pending_files')]
+    public function test_upgrade_moves_file_backed_pending_authority_into_shared_moodle_storage(string $suffix): void {
+        global $CFG;
+
+        $this->resetAfterTest();
+        $xml = file_get_contents(__DIR__ . '/fixtures/metadata.xml');
+        set_config('version', 2026090300, 'auth_saml2');
+        set_config('idpmetadata', $xml, 'auth_saml2');
+        $manager = new \auth_saml2\metadata_trust_manager();
+        $manager->bootstrap_existing_inline($xml, (new \auth_saml2\idp_parser())->parse($xml));
+        $changed = str_replace('q1og9SGCUU2yRL1tC+Y=', 'upgradePendingCertificate=', $xml);
+        self::assertSame(
+            \auth_saml2\metadata_trust_manager::PENDING,
+            $manager->review($changed, (new \auth_saml2\idp_parser())->parse($changed))
+        );
+        $payload = get_config('auth_saml2', 'metadatapending');
+        unset_config('metadatapending', 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $path = $directory . '/metadata.pending.json' . $suffix;
+        file_put_contents($path, $payload);
+
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090300));
+
+        self::assertSame($payload, get_config('auth_saml2', 'metadatapending'));
+        self::assertFileDoesNotExist($path);
+    }
+
+    /**
+     * File-backed proposal states used before DB-backed pending authority.
+     *
+     * @return array
+     */
+    public static function legacy_pending_files(): array {
+        return [
+            'pending review' => [''],
+            'interrupted activation' => ['.activating'],
+        ];
+    }
 }

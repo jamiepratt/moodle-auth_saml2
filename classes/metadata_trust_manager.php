@@ -16,6 +16,7 @@
 
 namespace auth_saml2;
 
+use auth_saml2\admin\setting_idpmetadata;
 use auth_saml2\admin\setting_idpmetadata_exception;
 use DOMDocument;
 use DOMXPath;
@@ -43,8 +44,11 @@ class metadata_trust_manager {
     /** Config key containing the approved security descriptor. */
     private const APPROVED_CONFIG = 'metadataapproved';
 
-    /** Pending metadata filename. */
-    private const PENDING_FILE = 'metadata.pending.json';
+    /** Config key containing the pending metadata authority. */
+    private const PENDING_CONFIG = 'metadatapending';
+
+    /** Config key containing durable activation recovery state. */
+    private const ACTIVATION_CONFIG = 'metadataactivationjournal';
 
     /**
      * Seed trust for already-installed inline XML without changing live metadata.
@@ -93,7 +97,14 @@ class metadata_trust_manager {
      * @return bool
      */
     public function has_pending(): bool {
-        return file_exists($this->pending_path());
+        return get_config('auth_saml2', self::PENDING_CONFIG) !== false;
+    }
+
+    /**
+     * Recover any interrupted activation before presenting trust state.
+     */
+    public function recover(): void {
+        $this->with_lock(static fn() => null);
     }
 
     /**
@@ -144,8 +155,18 @@ class metadata_trust_manager {
                 return self::UNCHANGED;
             }
         }
-        if (is_array($approved) && hash_equals($approved['fingerprint'] ?? '', $proposed['fingerprint'])) {
-            return self::UNCHANGED;
+        if (is_array($approved)) {
+            $approvedfingerprint = $approved['fingerprint'] ?? '';
+            if (
+                hash_equals($approvedfingerprint, $proposed['fingerprint']) ||
+                (
+                    !isset($approved['version']) &&
+                    $this->has_unambiguous_entity_relationships($proposed) &&
+                    hash_equals($approvedfingerprint, $this->legacy_fingerprint($proposed['sources']))
+                )
+            ) {
+                return self::UNCHANGED;
+            }
         }
 
         $summary = $this->difference_summary(is_array($approved) ? $approved : [], $proposed);
@@ -204,7 +225,7 @@ class metadata_trust_manager {
     /**
      * Return the summary and exact form fingerprint from one locked proposal read.
      *
-     * @return array{summary: array, proposalfingerprint: string}
+     * @return array{summary: array, proposalfingerprint: string, details: array}
      */
     public function get_pending_review(): array {
         return $this->with_lock(function (): array {
@@ -213,6 +234,7 @@ class metadata_trust_manager {
             return [
                 'summary' => $this->difference_summary(is_array($approved) ? $approved : [], $pending['descriptor']),
                 'proposalfingerprint' => $pending['proposalfingerprint'],
+                'details' => $pending['descriptor']['sources'],
             ];
         });
     }
@@ -278,35 +300,13 @@ class metadata_trust_manager {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
         try {
+            $this->recover_activation_locked();
             return $operation();
         } finally {
             if (!$lock->release()) {
                 debugging('The SAML metadata trust lock could not be released.', DEBUG_DEVELOPER);
             }
         }
-    }
-
-    /**
-     * Mark the staged metadata approved after it has been activated.
-     *
-     * @param int $userid Approver user ID.
-     * @param string $authority Owner or emergency delegate.
-     */
-    public function commit_pending(int $userid, string $authority): void {
-        $fingerprint = $this->get_pending_fingerprint();
-        $this->activate_pending($fingerprint, function (array $pending) use ($userid, $authority): void {
-            $this->record_approval($pending, $userid, $authority);
-        });
-    }
-
-    /**
-     * Record approval while the caller's activation transaction is still open.
-     *
-     * @param int $userid Approver user ID.
-     * @param string $authority Owner or emergency delegate.
-     */
-    public function record_pending_approval(int $userid, string $authority): void {
-        $this->record_approval($this->get_pending_data(), $userid, $authority);
     }
 
     /**
@@ -334,15 +334,6 @@ class metadata_trust_manager {
     }
 
     /**
-     * Remove the staged proposal after activation commits.
-     */
-    public function clear_pending(): void {
-        if ($this->has_pending() && !$this->delete_file($this->pending_path())) {
-            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-        }
-    }
-
-    /**
      * Consume a verified proposal before activation and clean it up after success.
      *
      * @param string $expectedfingerprint Cryptographic identity shown during review.
@@ -351,36 +342,153 @@ class metadata_trust_manager {
     public function activate_pending(string $expectedfingerprint, callable $activate): void {
         $this->with_lock(function () use ($expectedfingerprint, $activate): void {
             $pending = $this->get_pending_data($expectedfingerprint);
-            $pendingpath = $this->pending_path();
-            $activatingpath = $pendingpath . '.activating';
-            if (file_exists($activatingpath) && !$this->delete_file($activatingpath)) {
-                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-            }
-            if (!rename($pendingpath, $activatingpath)) {
-                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-            }
+            $this->prepare_activation_locked($pending);
+            $markcommitted = function () use ($pending): void {
+                $this->mark_activation_committed_locked($pending['proposalfingerprint']);
+            };
             try {
-                $activate($pending);
-            } catch (\Throwable $exception) {
-                if (!rename($activatingpath, $pendingpath)) {
-                    throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+                $activate($pending, $markcommitted);
+                $journal = $this->read_activation_journal();
+                if (($journal['state'] ?? '') !== 'committed') {
+                    $this->recover_activation_locked();
+                    throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
                 }
+                $this->recover_activation_locked();
+            } catch (\Throwable $exception) {
+                $this->recover_activation_locked();
                 throw $exception;
-            }
-            if (!$this->delete_file($activatingpath)) {
-                debugging('The consumed SAML metadata proposal could not be removed.', DEBUG_DEVELOPER);
             }
         });
     }
 
     /**
-     * Delete a metadata state file.
+     * Delete durable metadata state.
      *
-     * @param string $path File to delete.
+     * @param string $name Config key to delete.
      * @return bool
      */
-    protected function delete_file(string $path): bool {
-        return !file_exists($path) || unlink($path);
+    protected function delete_state(string $name): bool {
+        return unset_config($name, 'auth_saml2');
+    }
+
+    /**
+     * Persist enough pre-activation state to recover after process death.
+     *
+     * @param array $pending Verified pending proposal.
+     */
+    private function prepare_activation_locked(array $pending): void {
+        $journal = [
+            'state' => 'prepared',
+            'proposalfingerprint' => $pending['proposalfingerprint'],
+            'configfingerprint' => hash('sha256', $pending['configvalue']),
+            'descriptorfingerprint' => $pending['descriptor']['fingerprint'],
+            'files' => (new setting_idpmetadata())->snapshot_metadata_files(),
+        ];
+        $encoded = json_encode($journal, JSON_UNESCAPED_SLASHES);
+        if ($encoded === false || !set_config(self::ACTIVATION_CONFIG, $encoded, 'auth_saml2')) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+    }
+
+    /**
+     * Mark a journal committed inside the activation's database transaction.
+     *
+     * @param string $proposalfingerprint Proposal identity.
+     */
+    private function mark_activation_committed_locked(string $proposalfingerprint): void {
+        $journal = $this->read_activation_journal();
+        if (
+            ($journal['state'] ?? '') !== 'prepared' ||
+            !hash_equals($journal['proposalfingerprint'] ?? '', $proposalfingerprint)
+        ) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        $journal['state'] = 'committed';
+        $encoded = json_encode($journal, JSON_UNESCAPED_SLASHES);
+        if ($encoded === false || !set_config(self::ACTIVATION_CONFIG, $encoded, 'auth_saml2')) {
+            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+        }
+    }
+
+    /**
+     * Read and validate the activation journal container.
+     *
+     * @return array|null
+     */
+    private function read_activation_journal(): ?array {
+        global $DB;
+
+        $encoded = $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'auth_saml2',
+            'name' => self::ACTIVATION_CONFIG,
+        ]);
+        if ($encoded === false) {
+            return null;
+        }
+        $journal = json_decode((string) $encoded, true);
+        if (!is_array($journal)) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        return $journal;
+    }
+
+    /**
+     * Recover a durable activation interrupted before its database commit.
+     */
+    private function recover_activation_locked(): void {
+        $journal = $this->read_activation_journal();
+        if ($journal === null) {
+            return;
+        }
+        if (
+            !in_array($journal['state'] ?? '', ['prepared', 'committed'], true) ||
+            !isset($journal['proposalfingerprint'], $journal['files']) ||
+            !is_array($journal['files'])
+        ) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        if ($journal['state'] === 'prepared') {
+            $pending = $this->get_pending_data($journal['proposalfingerprint']);
+            if (
+                !hash_equals($journal['descriptorfingerprint'] ?? '', $pending['descriptor']['fingerprint']) ||
+                !hash_equals($journal['configfingerprint'] ?? '', hash('sha256', $pending['configvalue']))
+            ) {
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            (new setting_idpmetadata())->restore_metadata_files($journal['files']);
+            if (!$this->delete_state(self::ACTIVATION_CONFIG)) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+            return;
+        }
+
+        if ($this->has_pending()) {
+            $this->get_pending_data($journal['proposalfingerprint']);
+        }
+
+        global $DB;
+        $configvalue = $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'auth_saml2',
+            'name' => 'idpmetadata',
+        ]);
+        $approvedvalue = $DB->get_field('config_plugins', 'value', [
+            'plugin' => 'auth_saml2',
+            'name' => self::APPROVED_CONFIG,
+        ]);
+        $approved = json_decode((string) $approvedvalue, true);
+        if (
+            !hash_equals($journal['configfingerprint'] ?? '', hash('sha256', (string) $configvalue)) ||
+            !hash_equals($journal['descriptorfingerprint'] ?? '', $approved['fingerprint'] ?? '')
+        ) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        if ($this->has_pending() && !$this->delete_state(self::PENDING_CONFIG)) {
+            debugging('The consumed SAML metadata proposal could not be removed.', DEBUG_DEVELOPER);
+            return;
+        }
+        if (!$this->delete_state(self::ACTIVATION_CONFIG)) {
+            debugging('The completed SAML metadata activation journal could not be removed.', DEBUG_DEVELOPER);
+        }
     }
 
     /**
@@ -428,53 +536,60 @@ class metadata_trust_manager {
 
             $entities = [];
             foreach ($xpath->query('//md:EntityDescriptor[md:IDPSSODescriptor]') as $entity) {
-                $entities[] = $entity->getAttribute('entityID');
-            }
-            if (empty($entities) || in_array('', $entities, true)) {
-                throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
-            }
-
-            $keys = [];
-            $keyquery = '//md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
-                '//ds:X509Certificate | //md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
-                '//ds:KeyValue | //md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
-                '//ds11:DEREncodedKeyValue';
-            foreach ($xpath->query($keyquery) as $key) {
-                $normalized = preg_replace('/\s+/', '', $key->textContent);
-                if ($key->localName === 'X509Certificate' || $key->localName === 'DEREncodedKeyValue') {
-                    $decoded = base64_decode($normalized, true);
-                    $normalized = $decoded === false ? $normalized : $decoded;
+                $entityid = $entity->getAttribute('entityID');
+                if ($entityid === '') {
+                    throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
                 }
-                $keys[] = 'sha256:' . hash('sha256', $key->localName . ':' . $normalized);
-            }
 
-            $endpoints = [];
-            $endpointquery = '//md:IDPSSODescriptor/*[' .
-                'self::md:SingleSignOnService or self::md:SingleLogoutService or ' .
-                'self::md:ArtifactResolutionService]';
-            foreach ($xpath->query($endpointquery) as $endpoint) {
-                $endpoints[] = [
-                    'type' => $endpoint->localName,
-                    'binding' => $endpoint->getAttribute('Binding'),
-                    'location' => $endpoint->getAttribute('Location'),
-                    'responselocation' => $endpoint->getAttribute('ResponseLocation'),
+                $keys = [];
+                $keyquery = './md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
+                    '//ds:X509Certificate | ./md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
+                    '//ds:KeyValue | ./md:IDPSSODescriptor/md:KeyDescriptor[not(@use) or @use="signing"]' .
+                    '//ds11:DEREncodedKeyValue';
+                foreach ($xpath->query($keyquery, $entity) as $key) {
+                    $normalized = preg_replace('/\s+/', '', $key->textContent);
+                    if ($key->localName === 'X509Certificate' || $key->localName === 'DEREncodedKeyValue') {
+                        $decoded = base64_decode($normalized, true);
+                        $normalized = $decoded === false ? $normalized : $decoded;
+                    }
+                    $keys[] = 'sha256:' . hash('sha256', $key->localName . ':' . $normalized);
+                }
+
+                $endpoints = [];
+                $endpointquery = './md:IDPSSODescriptor/*[' .
+                    'self::md:SingleSignOnService or self::md:SingleLogoutService or ' .
+                    'self::md:ArtifactResolutionService]';
+                foreach ($xpath->query($endpointquery, $entity) as $endpoint) {
+                    $endpoints[] = [
+                        'type' => $endpoint->localName,
+                        'binding' => $endpoint->getAttribute('Binding'),
+                        'location' => $endpoint->getAttribute('Location'),
+                        'responselocation' => $endpoint->getAttribute('ResponseLocation'),
+                    ];
+                }
+
+                sort($keys);
+                usort($endpoints, static fn(array $left, array $right): int => $left <=> $right);
+                $entities[] = [
+                    'entityid' => $entityid,
+                    'signingkeys' => array_values(array_unique($keys)),
+                    'endpoints' => $endpoints,
                 ];
             }
-
-            sort($entities);
-            sort($keys);
-            usort($endpoints, static fn(array $left, array $right): int => $left <=> $right);
+            if (empty($entities)) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_invalid', 'auth_saml2'));
+            }
+            usort($entities, static fn(array $left, array $right): int => $left <=> $right);
             $sources[] = [
                 'source' => $idp->idpurl,
                 'entities' => $entities,
-                'keys' => array_values(array_unique($keys)),
-                'endpoints' => $endpoints,
             ];
         }
         usort($sources, static fn(array $left, array $right): int => $left <=> $right);
 
         $encoded = json_encode($sources, JSON_UNESCAPED_SLASHES);
         return [
+            'version' => 2,
             'fingerprint' => hash('sha256', $encoded),
             'sources' => $sources,
         ];
@@ -491,12 +606,11 @@ class metadata_trust_manager {
         $approvedsources = $approved['sources'] ?? [];
         $proposedsources = $proposed['sources'] ?? [];
         return [
-            'signingkeys' => $this->field_values($approvedsources, 'keys') !==
-                $this->field_values($proposedsources, 'keys'),
-            'endpoints' => $this->field_values($approvedsources, 'endpoints') !==
-                $this->field_values($proposedsources, 'endpoints'),
-            'entities' => $this->field_values($approvedsources, 'entities') !==
-                $this->field_values($proposedsources, 'entities'),
+            'signingkeys' => $this->relationship_values($approvedsources, 'signingkeys') !==
+                $this->relationship_values($proposedsources, 'signingkeys'),
+            'endpoints' => $this->relationship_values($approvedsources, 'endpoints') !==
+                $this->relationship_values($proposedsources, 'endpoints'),
+            'entities' => $this->entity_values($approvedsources) !== $this->entity_values($proposedsources),
             'sources' => array_column($approvedsources, 'source') !== array_column($proposedsources, 'source'),
             'approvedfingerprint' => $approved['fingerprint'] ?? '',
             'proposedfingerprint' => $proposed['fingerprint'],
@@ -526,15 +640,86 @@ class metadata_trust_manager {
      * @param string $field Field name.
      * @return array
      */
-    private function field_values(array $sources, string $field): array {
+    private function relationship_values(array $sources, string $field): array {
         $values = [];
         foreach ($sources as $source) {
-            foreach ($source[$field] ?? [] as $value) {
-                $values[] = $value;
+            foreach ($source['entities'] ?? [] as $entity) {
+                if (!is_array($entity)) {
+                    foreach ($source[$field === 'signingkeys' ? 'keys' : $field] ?? [] as $value) {
+                        $values[] = [$source['source'] ?? '', $entity, $value];
+                    }
+                    continue;
+                }
+                foreach ($entity[$field] ?? [] as $value) {
+                    $values[] = [$source['source'] ?? '', $entity['entityid'] ?? '', $value];
+                }
             }
         }
         usort($values, static fn($left, $right): int => $left <=> $right);
         return $values;
+    }
+
+    /**
+     * Collect source and entity identities from either descriptor format.
+     *
+     * @param array $sources Descriptor sources.
+     * @return array
+     */
+    private function entity_values(array $sources): array {
+        $values = [];
+        foreach ($sources as $source) {
+            foreach ($source['entities'] ?? [] as $entity) {
+                $values[] = [$source['source'] ?? '', is_array($entity) ? ($entity['entityid'] ?? '') : $entity];
+            }
+        }
+        usort($values, static fn($left, $right): int => $left <=> $right);
+        return $values;
+    }
+
+    /**
+     * Whether an old flattened descriptor represented relationships without ambiguity.
+     *
+     * @param array $descriptor Version 2 descriptor.
+     * @return bool
+     */
+    private function has_unambiguous_entity_relationships(array $descriptor): bool {
+        foreach ($descriptor['sources'] ?? [] as $source) {
+            if (count($source['entities'] ?? []) !== 1) {
+                return false;
+            }
+        }
+        return !empty($descriptor['sources']);
+    }
+
+    /**
+     * Reproduce the version 1 flattened fingerprint for safe single-entity compatibility.
+     *
+     * @param array $sources Version 2 sources.
+     * @return string
+     */
+    private function legacy_fingerprint(array $sources): string {
+        $legacy = [];
+        foreach ($sources as $source) {
+            $entityids = [];
+            $keys = [];
+            $endpoints = [];
+            foreach ($source['entities'] ?? [] as $entity) {
+                $entityids[] = $entity['entityid'];
+                $keys = array_merge($keys, $entity['signingkeys']);
+                $endpoints = array_merge($endpoints, $entity['endpoints']);
+            }
+            sort($entityids);
+            sort($keys);
+            usort($endpoints, static fn(array $left, array $right): int => $left <=> $right);
+            $legacy[] = [
+                'source' => $source['source'],
+                'entities' => $entityids,
+                'keys' => array_values(array_unique($keys)),
+                'endpoints' => $endpoints,
+            ];
+        }
+        usort($legacy, static fn(array $left, array $right): int => $left <=> $right);
+        return hash('sha256', json_encode($legacy, JSON_UNESCAPED_SLASHES));
     }
 
     /**
@@ -543,14 +728,11 @@ class metadata_trust_manager {
      * @return array|null
      */
     private function read_pending(): ?array {
-        if (!$this->has_pending()) {
+        $contents = get_config('auth_saml2', self::PENDING_CONFIG);
+        if ($contents === false) {
             return null;
         }
-        $contents = file_get_contents($this->pending_path());
-        if ($contents === false) {
-            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-        }
-        $payload = json_decode($contents, true);
+        $payload = json_decode((string) $contents, true);
         if (!is_array($payload)) {
             throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
         }
@@ -558,87 +740,14 @@ class metadata_trust_manager {
     }
 
     /**
-     * Write the pending metadata bundle outside the web root.
+     * Write the pending metadata bundle to shared Moodle database storage.
      *
      * @param array $payload Pending bundle.
      */
     private function write_pending(array $payload): void {
-        $path = $this->pending_path();
-        $directory = dirname($path);
-        if (!make_writable_directory($directory) || !is_dir($directory) || !is_writable($directory)) {
-            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-        }
         $encoded = json_encode($payload, JSON_UNESCAPED_SLASHES);
-        if ($encoded === false) {
+        if ($encoded === false || !set_config(self::PENDING_CONFIG, $encoded, 'auth_saml2')) {
             throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
         }
-        $temporary = tempnam($directory, '.metadata-pending-');
-        if ($temporary === false) {
-            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-        }
-        $written = file_put_contents($temporary, $encoded, LOCK_EX);
-        if (
-            $written !== strlen($encoded) ||
-            !$this->make_runtime_private($temporary, $directory) ||
-            !rename($temporary, $path)
-        ) {
-            if (file_exists($temporary) && !unlink($temporary)) {
-                debugging('A failed SAML pending metadata temporary file could not be removed.', DEBUG_DEVELOPER);
-            }
-            throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
-        }
-    }
-
-    /**
-     * Restrict a file to the runtime account that owns Moodle data.
-     *
-     * Root-run cron and test commands adopt the nearest non-root data-directory owner so the web runtime can read it.
-     *
-     * @param string $path File to secure.
-     * @param string $directory Storage directory.
-     * @return bool
-     */
-    private function make_runtime_private(string $path, string $directory): bool {
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            $owner = $this->find_runtime_owner($directory);
-            if ($owner === false || ($owner !== 0 && !chown($path, $owner))) {
-                return false;
-            }
-        }
-        return chmod($path, 0600);
-    }
-
-    /**
-     * Find the data owner that a privileged maintenance process should adopt.
-     *
-     * @param string $directory Starting directory.
-     * @return int|false
-     */
-    private function find_runtime_owner(string $directory): int|false {
-        $current = $directory;
-        while (true) {
-            $owner = fileowner($current);
-            if ($owner === false) {
-                return false;
-            }
-            if ($owner !== 0) {
-                return $owner;
-            }
-            $parent = dirname($current);
-            if ($parent === $current) {
-                return 0;
-            }
-            $current = $parent;
-        }
-    }
-
-    /**
-     * Path for staged metadata.
-     *
-     * @return string
-     */
-    private function pending_path(): string {
-        global $CFG;
-        return $CFG->dataroot . '/saml2/' . self::PENDING_FILE;
     }
 }

@@ -29,3 +29,8 @@ Feature: Manual SAML metadata approval
     And I press "Approve and activate"
     Then I should see "The staged IdP metadata was approved and activated."
     And the SAML metadata change should be active                              # auth_saml2
+
+  Scenario: Review shows the exact proposal details without interpreting metadata as HTML
+    Given the pending SAML proposal contains HTML-like identifiers             # auth_saml2
+    When I go to the SAML metadata approval page                               # auth_saml2
+    Then the exact pending SAML proposal details should be visible and escaped # auth_saml2

@@ -53,7 +53,9 @@ if ($ADMIN->fulltree) {
     $idpmetadata->set_updatedcallback('auth_saml2_update_idp_metadata');
     $settings->add($idpmetadata);
 
-    if ((new metadata_trust_manager())->has_pending()) {
+    $trustmanager = new metadata_trust_manager();
+    $trustmanager->recover();
+    if ($trustmanager->has_pending()) {
         $settings->add(new setting_button(
             'auth_saml2/metadataapproval',
             get_string('metadataapproval', 'auth_saml2'),

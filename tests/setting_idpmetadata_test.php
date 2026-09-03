@@ -212,7 +212,7 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertSame(0400, fileperms($livefile) & 0777);
     }
 
-    public function test_live_metadata_uses_private_permissions_and_preserves_a_stricter_existing_mode(): void {
+    public function test_live_metadata_uses_the_secure_moodle_storage_identity_and_preserves_stricter_modes(): void {
         global $CFG;
 
         $this->resetAfterTest();
@@ -220,14 +220,17 @@ final class setting_idpmetadata_test extends \advanced_testcase {
         self::assertEmpty(self::$config->write_setting($xml));
         $livefile = $CFG->dataroot . '/saml2/' . md5('xml') . '.idp.xml';
         clearstatcache(true, $livefile);
-        self::assertSame(0600, fileperms($livefile) & 0777);
+        self::assertSame(0640, fileperms($livefile) & 0777);
+        self::assertSame(posix_geteuid(), fileowner($livefile));
+        $dataowner = posix_getpwuid(fileowner($CFG->dataroot));
+        self::assertSame($dataowner['gid'], filegroup($livefile));
 
         chmod($livefile, 0666);
         $changed = str_replace('Example.com test IDP', 'Hardened display name', $xml);
         self::assertEmpty(self::$config->write_setting($changed));
 
         clearstatcache(true, $livefile);
-        self::assertSame(0600, fileperms($livefile) & 0777);
+        self::assertSame(0640, fileperms($livefile) & 0777);
 
         chmod($livefile, 0400);
         $changed = str_replace('Hardened display name', 'Changed display name', $changed);
@@ -235,6 +238,55 @@ final class setting_idpmetadata_test extends \advanced_testcase {
 
         clearstatcache(true, $livefile);
         self::assertSame(0400, fileperms($livefile) & 0777);
+    }
+
+    public function test_distinct_nonroot_writers_preserve_access_through_an_explicit_shared_group(): void {
+        global $CFG;
+
+        if (
+            !function_exists('posix_geteuid') ||
+            !function_exists('posix_seteuid') ||
+            !function_exists('posix_setegid') ||
+            posix_geteuid() !== 0
+        ) {
+            $this->markTestSkipped('Changing effective identities requires POSIX support and a root test process.');
+        }
+
+        $this->resetAfterTest();
+        $originalgid = posix_getegid();
+        $directory = $CFG->dataroot . '/saml2/shared-group-' . random_string(10);
+        self::assertTrue(mkdir($directory, 02770, true));
+        $sharedgid = 65534;
+        self::assertTrue(chgrp($directory, $sharedgid));
+        self::assertTrue(chmod($directory, 02770));
+        $temporary = $directory . '/metadata.tmp';
+        file_put_contents($temporary, 'shared metadata');
+        self::assertTrue(chown($temporary, 34));
+        self::assertTrue(chgrp($temporary, $sharedgid));
+        $attributes = ['owner' => 33, 'group' => $sharedgid, 'mode' => 0640];
+        $method = new \ReflectionMethod(setting_idpmetadata::class, 'apply_file_attributes');
+
+        try {
+            self::assertTrue(posix_setegid($sharedgid));
+            self::assertTrue(posix_seteuid(34));
+            self::assertTrue($method->invoke(self::$config, $temporary, $attributes));
+        } finally {
+            posix_seteuid(0);
+            posix_setegid($originalgid);
+        }
+
+        clearstatcache(true, $temporary);
+        self::assertSame(34, fileowner($temporary));
+        self::assertSame($sharedgid, filegroup($temporary));
+        self::assertSame(0640, fileperms($temporary) & 0777);
+        try {
+            self::assertTrue(posix_setegid($sharedgid));
+            self::assertTrue(posix_seteuid(33));
+            self::assertSame('shared metadata', file_get_contents($temporary));
+        } finally {
+            posix_seteuid(0);
+            posix_setegid($originalgid);
+        }
     }
 
     public function test_config_storage_failure_cannot_activate_validated_metadata(): void {

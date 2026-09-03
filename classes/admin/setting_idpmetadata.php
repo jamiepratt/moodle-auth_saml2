@@ -180,23 +180,28 @@ class setting_idpmetadata extends admin_setting_configtextarea {
 
         $manager = new metadata_trust_manager();
         $manager->validate_authority($authority);
-        $manager->activate_pending($expectedfingerprint, function (array $pending) use (
-            $manager,
-            $userid,
-            $authority
-        ): void {
-            $this->activate_metadata($pending['idps'], function () use (
+        $manager->activate_pending(
+            $expectedfingerprint,
+            function (
+                array $pending,
+                callable $markcommitted
+            ) use (
                 $manager,
-                $pending,
                 $userid,
                 $authority
             ): void {
-                if (!$this->write_config_value($pending['configvalue'])) {
-                    throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
-                }
-                $manager->record_approval($pending, $userid, $authority);
-            });
-        });
+                $this->activate_metadata(
+                    $pending['idps'],
+                    function () use ($manager, $pending, $userid, $authority): void {
+                        if (!$this->write_config_value($pending['configvalue'])) {
+                            throw new setting_idpmetadata_exception(get_string('errorsetting', 'admin'));
+                        }
+                        $manager->record_approval($pending, $userid, $authority);
+                    },
+                    $markcommitted
+                );
+            }
+        );
     }
 
     /**
@@ -204,8 +209,13 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      *
      * @param idp_data[] $idps
      * @param callable|null $withtransaction Additional database-backed trust changes.
+     * @param callable|null $beforecommit Durable marker written inside the database transaction.
      */
-    private function activate_metadata(array $idps, ?callable $withtransaction = null): void {
+    private function activate_metadata(
+        array $idps,
+        ?callable $withtransaction = null,
+        ?callable $beforecommit = null
+    ): void {
         global $DB;
 
         $files = $this->snapshot_metadata_files();
@@ -214,6 +224,9 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             $this->process_all_idps_metadata($idps);
             if ($withtransaction !== null) {
                 $withtransaction();
+            }
+            if ($beforecommit !== null) {
+                $beforecommit();
             }
             $transaction->allow_commit();
         } catch (\Throwable $exception) {
@@ -489,50 +502,52 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             if ($owner === false || $group === false || $permissions === false) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
             }
-            $mode = ($permissions & 0777) & 0600;
+            $mode = $permissions & 0777;
+            if (($mode & 0007) !== 0) {
+                $mode = ($mode & 0600) | (($mode & 0040) !== 0 ? 0040 : 0);
+            }
+            $mode &= 0660;
             if (($mode & 0400) === 0) {
                 throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
-            }
-            $effectiveowner = function_exists('posix_geteuid') ? posix_geteuid() : $owner;
-            $effectivegroup = function_exists('posix_getegid') ? posix_getegid() : $group;
-            if ($effectiveowner !== 0 && $owner === $effectiveowner && $group !== $effectivegroup) {
-                if (($mode & 0070) !== 0) {
-                    throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
-                }
-                $group = $effectivegroup;
             }
             return ['owner' => $owner, 'group' => $group, 'mode' => $mode];
         }
 
         $owner = function_exists('posix_geteuid') ? posix_geteuid() : fileowner($directory);
-        $group = function_exists('posix_getegid') ? posix_getegid() : filegroup($directory);
+        $group = $this->metadata_storage_group($directory);
         if ($owner === false || $group === false) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }
-        if ($owner === 0) {
-            $current = $directory;
-            while (true) {
-                $candidateowner = fileowner($current);
-                $candidategroup = filegroup($current);
-                if ($candidateowner === false || $candidategroup === false) {
-                    throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
-                }
-                if ($candidateowner !== 0) {
-                    $owner = $candidateowner;
-                    $ownerrecord = function_exists('posix_getpwuid') ? posix_getpwuid($candidateowner) : false;
-                    $group = is_array($ownerrecord) && isset($ownerrecord['gid'])
-                        ? (int) $ownerrecord['gid']
-                        : $candidategroup;
-                    break;
-                }
-                $parent = dirname($current);
-                if ($parent === $current) {
-                    break;
-                }
-                $current = $parent;
+        return ['owner' => $owner, 'group' => $group, 'mode' => 0640];
+    }
+
+    /**
+     * Find the stable service group governing Moodle data storage.
+     *
+     * Privileged cron and test processes can create a root-owned child data directory. The first non-root Moodle data
+     * owner identifies the shared service group without transferring file ownership to a guessed runtime account.
+     *
+     * @param string $directory Metadata directory.
+     * @return int|false
+     */
+    private function metadata_storage_group(string $directory): int|false {
+        $current = $directory;
+        while (true) {
+            $owner = fileowner($current);
+            $group = filegroup($current);
+            if ($owner === false || $group === false) {
+                return false;
             }
+            if ($owner !== 0) {
+                $record = function_exists('posix_getpwuid') ? posix_getpwuid($owner) : false;
+                return is_array($record) && isset($record['gid']) ? (int) $record['gid'] : $group;
+            }
+            $parent = dirname($current);
+            if ($parent === $current) {
+                return $group;
+            }
+            $current = $parent;
         }
-        return ['owner' => $owner, 'group' => $group, 'mode' => 0600];
     }
 
     /**
@@ -547,8 +562,20 @@ class setting_idpmetadata extends admin_setting_configtextarea {
             if (!chown($file, $attributes['owner']) || !chgrp($file, $attributes['group'])) {
                 return false;
             }
-        } else if (fileowner($file) !== $attributes['owner'] || filegroup($file) !== $attributes['group']) {
-            return false;
+        } else {
+            $owner = fileowner($file);
+            $group = filegroup($file);
+            if ($owner === false || $group === false) {
+                return false;
+            }
+            if ($owner === $attributes['owner']) {
+                if ($group !== $attributes['group'] && !chgrp($file, $attributes['group'])) {
+                    return false;
+                }
+            } else if ($group !== $attributes['group'] || ($attributes['mode'] & 0040) === 0) {
+                // A different writer may publish only through the same explicitly shared Moodle data group.
+                return false;
+            }
         }
         return chmod($file, $attributes['mode']);
     }
@@ -558,7 +585,7 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      *
      * @return array
      */
-    private function snapshot_metadata_files(): array {
+    public function snapshot_metadata_files(): array {
         global $CFG;
 
         $files = [];
@@ -589,10 +616,17 @@ class setting_idpmetadata extends admin_setting_configtextarea {
      *
      * @param array $snapshot File contents indexed by absolute path.
      */
-    private function restore_metadata_files(array $snapshot): void {
+    public function restore_metadata_files(array $snapshot): void {
         global $CFG;
 
-        $currentfiles = glob($CFG->dataroot . '/saml2/*.idp.xml');
+        $directory = $CFG->dataroot . '/saml2';
+        foreach (array_keys($snapshot) as $file) {
+            if (dirname($file) !== $directory || !str_ends_with(basename($file), '.idp.xml')) {
+                throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
+            }
+        }
+
+        $currentfiles = glob($directory . '/*.idp.xml');
         if ($currentfiles === false) {
             throw new setting_idpmetadata_exception(get_string('idpmetadata_writefailed', 'auth_saml2'));
         }

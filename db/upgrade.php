@@ -436,5 +436,35 @@ function xmldb_auth_saml2_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026090300, 'auth', 'saml2');
     }
 
+    if ($oldversion < 2026090301) {
+        // Move any proposal left by the short-lived file-backed implementation into shared Moodle storage.
+        $legacypaths = [
+            $CFG->dataroot . '/saml2/metadata.pending.json',
+            $CFG->dataroot . '/saml2/metadata.pending.json.activating',
+        ];
+        $existingpaths = array_values(array_filter($legacypaths, 'file_exists'));
+        if (count($existingpaths) > 1) {
+            throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+        }
+        if ($existingpaths) {
+            $legacy = file_get_contents($existingpaths[0]);
+            if ($legacy === false || !is_array(json_decode($legacy, true))) {
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            $current = get_config('auth_saml2', 'metadatapending');
+            if ($current !== false && !hash_equals((string) $current, $legacy)) {
+                throw new \moodle_exception('idpmetadata_pendinginvalid', 'auth_saml2');
+            }
+            if ($current === false && !set_config('metadatapending', $legacy, 'auth_saml2')) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+            if (!unlink($existingpaths[0])) {
+                throw new \moodle_exception('idpmetadata_pendingwritefailed', 'auth_saml2');
+            }
+        }
+
+        upgrade_plugin_savepoint(true, 2026090301, 'auth', 'saml2');
+    }
+
     return true;
 }

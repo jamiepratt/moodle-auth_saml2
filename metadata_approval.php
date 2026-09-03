@@ -39,6 +39,7 @@ $PAGE->set_title(get_string('metadataapproval', 'auth_saml2'));
 $PAGE->set_heading(get_string('metadataapproval', 'auth_saml2'));
 
 $manager = new metadata_trust_manager();
+$manager->recover();
 if (optional_param('confirm', 0, PARAM_BOOL)) {
     $requestsesskey = optional_param('sesskey', '', PARAM_RAW);
     if ($requestsesskey === '' || !confirm_sesskey($requestsesskey)) {
@@ -75,6 +76,34 @@ echo html_writer::tag('p', get_string('metadataapprovalsummary', 'auth_saml2', (
     'entities' => $summary['entities'] ? get_string('yes') : get_string('no'),
     'sources' => $summary['sources'] ? get_string('yes') : get_string('no'),
 ]));
+echo html_writer::tag('h3', get_string('metadataapprovalfingerprint', 'auth_saml2'));
+echo html_writer::tag('p', html_writer::tag('code', s($review['proposalfingerprint'])));
+foreach ($review['details'] as $source) {
+    $sourcetype = $source['source'] === 'xml'
+        ? get_string('metadataapprovalsourceinline', 'auth_saml2')
+        : get_string('metadataapprovalsourceremote', 'auth_saml2');
+    echo html_writer::tag('h3', get_string('metadataapprovalsource', 'auth_saml2'));
+    echo html_writer::tag('p', s($sourcetype) . ': ' . html_writer::tag('code', s($source['source'])));
+    foreach ($source['entities'] as $entity) {
+        echo html_writer::tag('h4', get_string('metadataapprovalentity', 'auth_saml2'));
+        echo html_writer::tag('p', html_writer::tag('code', s($entity['entityid'])));
+        foreach ($entity['signingkeys'] as $key) {
+            echo html_writer::tag('p', s(get_string('metadataapprovalsigningkey', 'auth_saml2')) . ': ' .
+                html_writer::tag('code', s($key)));
+        }
+        foreach ($entity['endpoints'] as $endpoint) {
+            $endpointdetails = [
+                $endpoint['type'],
+                $endpoint['location'],
+                $endpoint['responselocation'],
+                get_string('metadataapprovalbinding', 'auth_saml2') . ': ' . $endpoint['binding'],
+            ];
+            $endpointdetails = array_filter($endpointdetails, static fn(string $value): bool => $value !== '');
+            echo html_writer::tag('p', s(get_string('metadataapprovalendpoint', 'auth_saml2')) . ': ' .
+                html_writer::tag('code', s(implode(' | ', $endpointdetails))));
+        }
+    }
+}
 
 echo html_writer::start_tag('form', ['method' => 'post', 'action' => $url]);
 echo html_writer::empty_tag('input', ['type' => 'hidden', 'name' => 'sesskey', 'value' => sesskey()]);

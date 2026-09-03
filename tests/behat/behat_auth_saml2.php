@@ -406,6 +406,59 @@ EOF;
     }
 
     /**
+     * Replace the pending change with valid XML whose entity ID resembles executable HTML.
+     *
+     * @Given /^the pending SAML proposal contains HTML-like identifiers +\# auth_saml2$/
+     */
+    public function the_pending_saml_proposal_contains_html_like_identifiers(): void {
+        $active = (string) get_config('auth_saml2', 'idpmetadata');
+        $entityid = 'https://review.example/&quot;&gt;&lt;script id=&quot;saml-pending-xss&quot;&gt;' .
+            'alert(1)&lt;/script&gt;';
+        $changed = preg_replace('/entityID="[^"]+"/', 'entityID="' . $entityid . '"', $active, 1, $replacements);
+        $result = (new \auth_saml2\admin\setting_idpmetadata())->validate($changed);
+        if ($replacements !== 1 || $result !== get_string('idpmetadata_pendingapproval', 'auth_saml2')) {
+            throw new ExpectationException('The HTML-like metadata proposal was not staged.', $this->getSession());
+        }
+    }
+
+    /**
+     * Assert that all safe approval details are shown and markup-like values remain text.
+     *
+     * @Then /^the exact pending SAML proposal details should be visible and escaped +\# auth_saml2$/
+     */
+    public function the_exact_pending_saml_proposal_details_should_be_visible_and_escaped(): void {
+        $manager = new \auth_saml2\metadata_trust_manager();
+        $review = $manager->get_pending_review();
+        $pending = $manager->get_pending_data($review['proposalfingerprint']);
+        $page = $this->getSession()->getPage();
+        $text = $page->getText();
+
+        $expected = [$review['proposalfingerprint']];
+        foreach ($pending['descriptor']['sources'] as $source) {
+            $expected[] = $source['source'];
+            foreach ($source['entities'] as $entity) {
+                $expected[] = $entity['entityid'];
+                $expected = array_merge($expected, $entity['signingkeys']);
+                foreach ($entity['endpoints'] as $endpoint) {
+                    $expected = array_merge($expected, array_filter($endpoint, static fn(string $value): bool => $value !== ''));
+                }
+            }
+        }
+        foreach ($expected as $value) {
+            if (!str_contains($text, $value)) {
+                throw new ExpectationException("The proposal detail '{$value}' was not visible.", $this->getSession());
+            }
+        }
+        $hidden = $page->find('css', 'input[name="proposalfingerprint"]');
+        if ($hidden === null || !hash_equals($review['proposalfingerprint'], (string) $hidden->getValue())) {
+            throw new ExpectationException('The visible and submitted proposal fingerprints differ.', $this->getSession());
+        }
+        if ($page->find('css', '#saml-pending-xss') !== null) {
+            throw new ExpectationException('Metadata content was interpreted as executable HTML.', $this->getSession());
+        }
+    }
+
+    /**
      * Confirms a user's login from the IdP, and returns information back to Moodle.
      *
      * This step must be used while at the mock IdP 'login' screen.
