@@ -282,4 +282,45 @@ final class upgrade_test extends \advanced_testcase {
 
         self::assertTrue($dbman->table_exists($table));
     }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('legacy_private_key_modes')]
+    public function test_upgrade_removes_unsafe_legacy_private_key_exposure_without_weakening_locked_modes(
+        int $legacymode,
+        int $expectedmode
+    ): void {
+        global $CFG;
+
+        set_config('version', 2026090303, 'auth_saml2');
+        $directory = $CFG->dataroot . '/saml2';
+        make_writable_directory($directory);
+        $directorymode = fileperms($directory) & 07777;
+        $key = $directory . '/' . (new \moodle_url($CFG->wwwroot))->get_host() . '.pem';
+        file_put_contents($key, 'legacy private key');
+        chmod($key, $legacymode);
+        $owner = fileowner($key);
+        $group = filegroup($key);
+
+        self::assertTrue(\xmldb_auth_saml2_upgrade(2026090303));
+
+        clearstatcache(true, $key);
+        self::assertSame('legacy private key', file_get_contents($key));
+        self::assertSame($expectedmode, fileperms($key) & 0777);
+        self::assertSame($owner, fileowner($key));
+        self::assertSame($group, filegroup($key));
+        self::assertSame($directorymode, fileperms($directory) & 07777);
+    }
+
+    /**
+     * Legacy private-key modes and their safe upgraded forms.
+     *
+     * @return array<string, array{int, int}>
+     */
+    public static function legacy_private_key_modes(): array {
+        return [
+            'world-readable conventional mode' => [0644, 0600],
+            'world-writable permissive mode' => [0666, 0600],
+            'owner-only locked mode' => [0400, 0400],
+            'explicit group-readable locked mode' => [0440, 0440],
+        ];
+    }
 }

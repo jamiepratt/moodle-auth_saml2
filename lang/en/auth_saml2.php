@@ -227,6 +227,7 @@ $string['pluginname'] = 'SAML2';
 $string['privacy:no_data_reason'] = 'The Saml2 authentication plugin does not store any personal data.';
 $string['privatekeypass'] = 'Private certificate key password';
 $string['privatekeypass_help'] = 'This is used for signing the local Moodle certificate, changing this will invalidate the current certificate.';
+$string['privatekeypermissionupgradefailed'] = 'Could not secure existing SAML SP private key permissions.';
 $string['regenerate_submit'] = 'Regenerate';
 $string['regenerateheader'] = 'Regenerate Private Key and Certificate';
 $string['regenerateheading'] = 'Regenerate Private Key and Certificate';

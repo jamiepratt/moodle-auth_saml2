@@ -131,8 +131,10 @@ cache and are each limited to 8 MiB. A preconfigured setgid
 `moodledata/saml2` directory enables owner/group-only metadata access when web
 and cron identities share its group. The plugin never changes that directory's
 mode or group because it also contains the SP private key. Without the explicit
-setgid setup, new metadata files remain owner-only. Empty saves are rejected
-once trust is active so they cannot implicitly deactivate or discard it.
+setgid setup, new metadata files remain owner-only. New SP private keys are
+published owner-only, and upgrades remove world exposure from legacy keys while
+preserving existing stricter owner/group modes. Empty saves are rejected once
+trust is active so they cannot implicitly deactivate or discard it.
 
 
 ## Testing
