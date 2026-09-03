@@ -40,8 +40,9 @@ require_once("{$CFG->dirroot}/auth/saml2/auth.php");
  * @param \auth_saml2\auth $saml2auth config object
  * @param array $dn Certificate Distinguished name details
  * @param integer $numberofdays Certificate expirey period
+ * @param int|false $privatekeygroup Explicit trusted setgid directory group, or false for owner-only access
  */
-function create_certificates($saml2auth, $dn = false, $numberofdays = 3650) {
+function create_certificates($saml2auth, $dn = false, $numberofdays = 3650, $privatekeygroup = false) {
     global $SITE;
 
     if (get_config('auth_saml2', 'certs_locked') == true) {
@@ -91,11 +92,25 @@ function create_certificates($saml2auth, $dn = false, $numberofdays = 3650) {
         return get_string('nullpubliccert', 'auth_saml2') . $errors;
     }
 
-    $privatekeytemp = tempnam(dirname($saml2auth->certpem), '.private-key-');
+    $directory = dirname($saml2auth->certpem);
+    $trustedgroup = false;
+    if ($privatekeygroup !== false) {
+        $directorygroup = filegroup($directory);
+        $directorypermissions = fileperms($directory);
+        $trustedgroup = is_int($privatekeygroup) &&
+            $privatekeygroup >= 0 &&
+            $directorygroup === $privatekeygroup &&
+            $directorypermissions !== false &&
+            ($directorypermissions & 02000) !== 0;
+    }
+    $privatekeymode = $privatekeygroup === false ? 0600 : 0640;
+    $privatekeytemp = tempnam($directory, '.private-key-');
     if (
         $privatekeytemp === false ||
+        ($privatekeygroup !== false && !$trustedgroup) ||
         file_put_contents($privatekeytemp, $privatekey, LOCK_EX) !== strlen($privatekey) ||
-        !chmod($privatekeytemp, 0600) ||
+        ($trustedgroup && !chgrp($privatekeytemp, $privatekeygroup)) ||
+        !chmod($privatekeytemp, $privatekeymode) ||
         !rename($privatekeytemp, $saml2auth->certpem)
     ) {
         if (
