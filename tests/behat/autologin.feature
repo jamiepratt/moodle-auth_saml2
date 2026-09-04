@@ -23,7 +23,7 @@ Feature: Automatically log in
     When I am on site homepage
     And the mock SAML IdP allows passive login with the following attributes: # auth_saml2
       | uid | student1 |
-    Then I should see "Course 1"
+    Then I should see "Course 1" in the "Course overview" "block"
     And I should see "Eigh Person"
 
     # Future requests should not contact the IdP (obviously, because logged in).
