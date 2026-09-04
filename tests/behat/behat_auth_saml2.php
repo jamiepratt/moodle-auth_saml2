@@ -54,6 +54,47 @@ class behat_auth_saml2 extends behat_base {
     private string $activemetadatafingerprint = '';
 
     /**
+     * Seeds the cache-coherence failure that SAML Behat setup must repair.
+     *
+     * @Given /^the insecure-cookie database and config cache disagree +\# auth_saml2$/
+     */
+    public function the_insecure_cookie_database_and_config_cache_disagree(): void {
+        global $DB;
+
+        set_config('cookiesecure', '0');
+
+        $cache = cache::make('core', 'config');
+        $config = (array) get_config('core');
+        $config['cookiesecure'] = '1';
+        $cache->set('core', $config);
+
+        $databasevalue = $DB->get_field('config', 'value', ['name' => 'cookiesecure']);
+        $cachedconfig = $cache->get('core');
+        if ($databasevalue !== '0' || $cachedconfig['cookiesecure'] !== '1') {
+            throw new ExpectationException('The stale secure-cookie fixture was not created.', $this->getSession());
+        }
+    }
+
+    /**
+     * Confirms SAML Behat setup made the database value effective.
+     *
+     * @Then /^insecure test cookies should be effective +\# auth_saml2$/
+     */
+    public function insecure_test_cookies_should_be_effective(): void {
+        if (get_config('core', 'cookiesecure') !== '0') {
+            throw new ExpectationException('The stale secure-cookie config remains effective.', $this->getSession());
+        }
+    }
+
+    /**
+     * Allows SAML cookies over the disposable HTTP Behat site.
+     */
+    private function allow_insecure_test_cookies(): void {
+        set_config('cookiesecure', '0');
+        cache_helper::invalidate_by_definition('core', 'config', [], 'core');
+    }
+
+    /**
      * Confirms the Authentication plugin is enabled
      *
      * @param bool $enabled
@@ -177,8 +218,7 @@ class behat_auth_saml2 extends behat_base {
 
         require_once($CFG->dirroot . '/auth/saml2/auth.php');
 
-        // All integration test are over HTTP.
-        set_config('cookiesecure', false);
+        $this->allow_insecure_test_cookies();
 
         /** @var auth_plugin_saml2 $auth */
         $auth = get_auth_plugin('saml2');
@@ -308,8 +348,7 @@ EOF;
         $idpmetadata->set_updatedcallback('auth_saml2_update_idp_metadata');
         $idpmetadata->write_setting($metadata);
 
-        // Allow insecure cookies for Behat testing.
-        set_config('cookiesecure', '0');
+        $this->allow_insecure_test_cookies();
 
         // Turn auth_saml2 debugging on, required for self-test feature.
         set_config('debug', '1', 'auth_saml2');
