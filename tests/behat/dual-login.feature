@@ -20,13 +20,25 @@ Feature: SAML2 Dual Login
     And I should not see "Mock IdP login"
 
   @auth_saml2_metadata_trust
-  Scenario: A standard administrator login remains available while static SAML is active
-    Given the saml2 setting "Dual Login" is set to "no"                        # auth_saml2
+  Scenario: Two standard administrators can authenticate independently while static SAML is active
+    Given the following "users" exist:
+      | username      | firstname | lastname      | email                         |
+      | fallbackadmin | Fallback  | Administrator | fallbackadmin@example.invalid |
+    And the user "fallbackadmin" is a site administrator                       # auth_saml2
+    And the saml2 setting "Dual Login" is set to "no"                          # auth_saml2
     When I go to the login page with "saml=off"                                # auth_saml2
     And I set the field "Username" to "admin"
     And I set the field "Password" to "admin"
     And I press "Log in"
     Then I should see "Admin User"
+    And I navigate to "Users > Accounts > Browse list of users" in site administration
+    And I log out
+    When I go to the login page with "saml=off"                                # auth_saml2
+    And I set the field "Username" to "fallbackadmin"
+    And I set the field "Password" to "fallbackadmin"
+    And I press "Log in"
+    Then I should see "Fallback Administrator"
+    And I navigate to "Users > Accounts > Browse list of users" in site administration
 
   Scenario: If dual login is "yes" then I need to select SAML2
     Given the saml2 setting "Dual Login" is set to "yes"                       # auth_saml2

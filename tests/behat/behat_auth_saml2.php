@@ -179,6 +179,34 @@ class behat_auth_saml2 extends behat_base {
     }
 
     /**
+     * Adds a local manual account to the site administrator list.
+     *
+     * @param string $username Moodle username.
+     * @Given /^the user "([^"]*)" is a site administrator +\# auth_saml2$/
+     */
+    public function the_user_is_a_site_administrator(string $username): void {
+        global $CFG, $DB;
+
+        $user = $DB->get_record('user', [
+            'username' => $username,
+            'mnethostid' => $CFG->mnet_localhost_id,
+            'deleted' => 0,
+        ], '*', MUST_EXIST);
+        if ($user->auth !== 'manual') {
+            throw new ExpectationException(
+                "The user '{$username}' is not a standard manual account.",
+                $this->getSession()
+            );
+        }
+
+        $adminids = array_values(array_filter(array_map('intval', explode(',', (string) $CFG->siteadmins))));
+        if (!in_array((int) $user->id, $adminids, true)) {
+            $adminids[] = (int) $user->id;
+            set_config('siteadmins', implode(',', $adminids));
+        }
+    }
+
+    /**
      * Go to the saml2 settings page.
      *
      * @Given /^I am on the saml2 settings page +\# auth_saml2$/
