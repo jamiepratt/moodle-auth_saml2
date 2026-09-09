@@ -54,20 +54,23 @@ class selectidp_buttons extends moodleform {
         $mform->setType('wants', PARAM_URL);
         $mform->addElement('checkbox', 'rememberidp', '', get_string('rememberidp', 'auth_saml2'));
 
-        foreach ($metadataentities as $idpentities) {
-            if (isset($idpentities[$storedchoiceidp])) {
-                $storedchoiceidp = $idpentities[$storedchoiceidp];
-                $mform->addElement(
-                    'html',
-                    $this->get_idpbutton($storedchoiceidp, $storedchoiceidp->name, $storedchoiceidp->logo, true)
-                );
-                $mform->addElement('html', '<hr>');
-                unset($idpentities[$storedchoiceidp]);
+        // Accept the selector's flat list and metadata-source groups used by other callers.
+        $idps = [];
+        foreach ($metadataentities as $id => $entities) {
+            if (is_array($entities)) {
+                $idps += $entities;
+            } else {
+                $idps[$id] = $entities;
             }
-
-            foreach ($idpentities as $idpentityid => $idp) {
-                $mform->addElement('html', $this->get_idpbutton($idpentityid, $idp->name, $idp->logo));
-            }
+        }
+        if (isset($idps[$storedchoiceidp])) {
+            $remembered = $idps[$storedchoiceidp];
+            $mform->addElement('html', $this->get_idpbutton($storedchoiceidp, $remembered->name, $remembered->logo, true));
+            $mform->addElement('html', \html_writer::empty_tag('hr'));
+            unset($idps[$storedchoiceidp]);
+        }
+        foreach ($idps as $idpentityid => $idp) {
+            $mform->addElement('html', $this->get_idpbutton($idpentityid, $idp->name, $idp->logo));
         }
     }
 
@@ -82,14 +85,14 @@ class selectidp_buttons extends moodleform {
      * @return string
      */
     private function get_idpbutton($idpentityid, $idpname, $logourl, $rememberedidp = false) {
-        $logo = !is_null($logourl) ? "<img src=\"{$logourl}\"> " : "";
-        $extraclasses = $rememberedidp ? "rememberedidp" : "";
-        return <<<EOD
-<div class="fitem fitem_actionbuttons fitem_fsubmit ">
-    <button value="{$idpentityid}" class="btn idpbtn {$extraclasses}" type="submit" name="idp">
-        {$logo}{$idpname}
-    </button>
-</div>
-EOD;
+        $url = \auth_saml2\output\idp_logo::url($logourl);
+        $logo = $url === null ? '' : \html_writer::empty_tag('img', ['src' => $url, 'alt' => '']) . ' ';
+        $button = \html_writer::tag('button', $logo . s($idpname), [
+            'value' => $idpentityid,
+            'class' => 'btn idpbtn' . ($rememberedidp ? ' rememberedidp' : ''),
+            'type' => 'submit',
+            'name' => 'idp',
+        ]);
+        return \html_writer::div($button, 'fitem fitem_actionbuttons fitem_fsubmit');
     }
 }

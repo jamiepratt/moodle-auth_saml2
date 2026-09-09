@@ -43,6 +43,15 @@ produce no assertion form or delivery. Metadata is checked against the actual
 NameID format. Existing `tests/behat/login.feature` covers ordinary SP login,
 profile mapping, and logout without external service traffic.
 
+`tests/form/selectidp_test.php` covers literal metadata names and entity IDs,
+escaped field attributes, absolute HTTP(S) logo URLs, remembered providers,
+and both login and administrator selectors. Display-only metadata refreshes
+are exercised through the real setting writer: approved security descriptors
+stay unchanged, and subsequent endpoint changes still require approval.
+The `@auth_saml2_selector` browser scenarios verify unauthenticated buttons,
+a local logo, remembered dropdown selection, and administrator source labels
+using inert HTML-like metadata. No external IdP or image service is contacted.
+
 The following local manual exercises are useful when developing the synthetic
 IdP fixture. They are not CI dependencies:
 

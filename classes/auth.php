@@ -296,11 +296,9 @@ class auth extends \auth_plugin_base {
             $idpurl->param('passive', 'off');
 
             // A default icon.
-            $idpiconurl = null;
+            $idpiconurl = \auth_saml2\output\idp_logo::url($idp->logo);
             $idpicon = null;
-            if (!empty($idp->logo)) {
-                $idpiconurl = new moodle_url($idp->logo);
-            } else {
+            if ($idpiconurl === null) {
                 $idpicon = new pix_icon('i/user', 'Login');
             }
 

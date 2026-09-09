@@ -55,13 +55,13 @@ class availableidps extends moodleform {
                 $fieldkey = 'metadataentities[' . $metadataurl . '][' . $idpentityid . ']';
 
                 // Add the start of the row, entiyid, name, etc.
-                $mform->addElement('header', $idpentityid . 'header', $idpentity['name']);
+                $mform->addElement('header', md5($idpentityid) . 'header', s($idpentity['name']));
                 $mform->addElement('hidden', $fieldkey . '[id]');
                 $mform->setType($fieldkey . '[id]', PARAM_INT);
 
                 // List the source.
                 $mform->addElement('html', \html_writer::div(
-                    get_string('source', 'auth_saml2', $idpentity['entityid']),
+                    get_string('source', 'auth_saml2', s($idpentity['entityid'])),
                     'alert p-2 bg-gray bg-gray020'
                 ));
 
