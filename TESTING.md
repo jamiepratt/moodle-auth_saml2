@@ -34,6 +34,15 @@ The PHPUnit suite requires a disposable Redis server. It deliberately fails
 instead of skipping Redis integration coverage when
 `AUTH_SAML2_REDIS_STORE_TEST_SERVER` is absent or unreachable.
 
+`idp_request_test.php` and `idp_response_test.php` exercise the optional
+Moodle-as-IdP trust boundary and independently verify the synthetic signed
+assertion. The `@auth_saml2_moodle_idp` browser scenarios use the guarded local
+`tests/fixtures/mocksp/acs.php` receiver. They count all assertion POSTs, verify
+approved signatures, and prove disabled, legacy, and attacker-ACS requests
+produce no assertion form or delivery. Metadata is checked against the actual
+NameID format. Existing `tests/behat/login.feature` covers ordinary SP login,
+profile mapping, and logout without external service traffic.
+
 The following local manual exercises are useful when developing the synthetic
 IdP fixture. They are not CI dependencies:
 

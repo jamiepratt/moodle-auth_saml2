@@ -138,6 +138,43 @@ while preserving existing stricter owner/group modes. Empty saves are rejected
 once trust is active so they cannot implicitly deactivate or discard it.
 
 
+### Optional Moodle identity provider
+
+Moodle-as-IdP is disabled by default and is separate from ordinary SAML SP
+login. Its registered service provider setting contains one `entity-ID ACS-URL`
+pair per line, for example:
+
+```text
+urn:example:service https://service.example/saml/acs
+```
+
+An entity ID may repeat for multiple explicitly trusted ACS endpoints. ACS
+matching is exact; when the request omits its ACS, precisely one distinct
+registered endpoint must exist. HTTP and HTTPS URLs are supported for explicit
+registrations; production endpoints must use HTTPS. Credentials, fragments,
+non-HTTP schemes, and malformed registrations are refused.
+
+Any malformed or legacy entity-ID-only row blocks the optional IdP; stored
+entries are preserved. No destination is guessed or copied from a request. The settings help and refusal message direct
+administrators to verify each ACS with the service owner before adding it.
+Changing deployed trust remains a separate operational action.
+
+This optional flow accepts bounded HTTP-Redirect AuthnRequests and returns
+signed HTTP-POST assertions to registered destinations. Unsigned issuer values
+select a registration; they do not authenticate the requesting SP. Subject,
+scoping, requested authentication context, and other unsupported claims are
+refused. ForceAuthn and IsPassive requests are refused when true. Supported
+NameIDPolicy formats are emailAddress and unspecified; issued NameIDs contain
+the current Moodle user's email. Authentication context is unspecified because
+a Moodle session alone does not establish a particular login method.
+
+Request IDs use a bounded ASCII XML identifier subset. Requests must be no more
+than five minutes old or one minute ahead. Assertions expire after five minutes
+with a one-minute NotBefore allowance. Destination, Recipient, Audience, and
+InResponseTo derive from the validated request and registration. RelayState is
+limited to 80 bytes and the response is not cacheable. These controls do not
+alter Moodle's ordinary SP login or existing upstream IdP trust configuration.
+
 ## Testing
 
 Shipmate CI runs the plugin-owned PHPUnit suite and deterministic Behat suite

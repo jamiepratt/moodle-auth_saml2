@@ -25,8 +25,11 @@
 // @codingStandardsIgnoreStart
 require_once(__DIR__ . '/../../../config.php');
 // @codingStandardsIgnoreEnd
-require_once('../setup.php');
-require_once('../locallib.php');
+if (empty(get_config('auth_saml2', 'moodleidpenabled'))) {
+    throw new moodle_exception('moodleidpenabled_error', 'auth_saml2');
+}
+require_once(__DIR__ . '/../setup.php');
+require_once(__DIR__ . '/../locallib.php');
 
 $saml2auth = new \auth_saml2\auth();
 
@@ -50,7 +53,7 @@ if ($saml2auth->config->moodleidpenabled) {
     </md:KeyDescriptor>
     <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
         Location="{$baseurl}/slo.php" />
-    <md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</md:NameIDFormat>
+    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>
     <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
         Location="{$baseurl}/sso.php" />
     </md:IDPSSODescriptor>
@@ -60,5 +63,5 @@ if ($saml2auth->config->moodleidpenabled) {
     header('Content-Type: text/xml');
     echo($xml);
 } else {
-    throw new saml2_exception('idp_enabled_error', get_string('moodleidpenabled_error', 'auth_saml2'));
+    throw new moodle_exception('moodleidpenabled_error', 'auth_saml2');
 }
