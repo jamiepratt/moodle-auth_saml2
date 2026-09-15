@@ -506,7 +506,7 @@ class auth extends \auth_plugin_base {
         }
 
         // Never redirect if has error.
-        if (!empty($_GET['SimpleSAML_Auth_State_exceptionId'])) {
+        if ($this->get_login_query_parameter('SimpleSAML_Auth_State_exceptionId', PARAM_RAW)) {
             $this->log(__FUNCTION__ . ' skipping due to SimpleSAML_Auth_State_exceptionId');
             return false;
         }
@@ -582,6 +582,41 @@ class auth extends \auth_plugin_base {
     }
 
     /**
+     * Read the GET-only login controls through Moodle's parameter validation.
+     *
+     * optional_param() gives POST precedence, which would change these controls.
+     * Exception markers are opaque and never displayed; even malformed nonempty
+     * markers must stop the login loop. Remembering an IdP requires a numeric one.
+     *
+     * @param string $name Login query parameter name.
+     * @param string $type PARAM_RAW for the exception marker, PARAM_FLOAT for rememberidp.
+     * @return string|float|int Cleaned marker or numeric choice.
+     */
+    private function get_login_query_parameter(string $name, string $type) {
+        $value = $_GET[$name] ?? '';
+        if ($type === PARAM_RAW) {
+            if (empty($value)) {
+                return '';
+            }
+            // Preserve loop prevention without processing malformed array contents.
+            if (is_array($value)) {
+                return 'invalid';
+            }
+            return clean_param($value, PARAM_RAW) ?: 'invalid';
+        }
+
+        if (is_array($value)) {
+            return 0;
+        }
+        try {
+            // Preserve numeric GET values such as 1.0, 1e0 and surrounding whitespace.
+            return validate_param(trim((string)$value, " \t\n\r\v\f"), PARAM_FLOAT);
+        } catch (\invalid_parameter_exception $exception) {
+            return 0;
+        }
+    }
+
+    /**
      * Checks whether a user is allowed to skip redirect by using ?saml=off and noredirect params.
      *
      * @return bool whether the user can use these flags.
@@ -648,7 +683,7 @@ class auth extends \auth_plugin_base {
             }
         }
 
-        if (isset($_GET['rememberidp']) && $_GET['rememberidp'] == 1) {
+        if ($this->get_login_query_parameter('rememberidp', PARAM_FLOAT) == 1) {
             $this->set_idp_cookie($SESSION->saml2idp);
         }
 
@@ -1046,7 +1081,7 @@ class auth extends \auth_plugin_base {
                                     if ($field == $this->config->mdlattr || $field == 'username') {
                                         $this->log(__FUNCTION__ .
                                             " user '$user->username' $field can't be updated once set");
-                                        \core\notification::warning("Your $field wasn't updated");
+                                        \core\notification::warning(get_string('fieldnotupdated', 'auth_saml2', s($field)));
                                         continue;
                                     }
                                 }

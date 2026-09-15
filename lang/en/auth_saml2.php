@@ -96,6 +96,7 @@ $string['exception'] = 'SAML2 exception: {$a}';
 $string['expirydays'] = 'Expiry in Days';
 $string['fielddelimiter'] = 'Field delimiter';
 $string['fielddelimiter_help'] = 'The delimiter to use when a field receives an array of values from the IdP.';
+$string['fieldnotupdated'] = 'Your {$a} wasn\'t updated';
 $string['flaggedresponsetypemessage'] = 'Display custom message';
 $string['flaggedresponsetyperedirect'] = 'Redirect to external URL';
 $string['flagmessage'] = 'Response message';
