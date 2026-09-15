@@ -68,7 +68,12 @@ class redis_store implements \SimpleSAML\Store\StoreInterface {
      * @param int|null $expire
      */
     public function set(string $type, string $key, mixed $value, ?int $expire = null): void {
-        $this->redis->set($this->make_key($type, $key), $value, $this->get_set_options($expire));
+        $options = $this->get_set_options($expire);
+        if (isset($options['ex']) && $options['ex'] <= 0) {
+            $this->delete($type, $key);
+            return;
+        }
+        $this->redis->set($this->make_key($type, $key), $value, $options);
     }
 
     /**
@@ -150,7 +155,7 @@ class redis_store implements \SimpleSAML\Store\StoreInterface {
         $options = [];
 
         $now = time();
-        if ($expire !== null && $expire > $now) {
+        if ($expire !== null) {
             $options['ex'] = $expire - $now;
         }
 

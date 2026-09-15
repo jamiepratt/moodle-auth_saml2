@@ -153,7 +153,7 @@ class store implements \SimpleSAML\Store\StoreInterface {
     public function delete_expired() {
         global $DB;
         $sql = 'DELETE FROM {auth_saml2_kvstore}
-                 WHERE expire < :now';
+                 WHERE expire <= :now';
         $params = ['now' => time()];
 
         $DB->execute($sql, $params);

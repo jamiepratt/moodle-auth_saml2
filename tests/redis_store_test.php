@@ -68,6 +68,22 @@ final class redis_store_test extends \advanced_testcase {
         $this->assertEqualsWithDelta($expectedttl, $ttl, 5);
     }
 
+    /**
+     * Expired writes invalidate the same key without persisting expired data.
+     */
+    public function test_expired_write_invalidates_only_its_key(): void {
+        $store = new redis_store($this->redis);
+        $store->set('session', 'privacy-other', ['email' => 'other@example.test'], time() + 600);
+        foreach ([time(), time() - 60] as $expiry) {
+            $store->set('session', 'privacy-expired', ['email' => 'subject@example.test'], time() + 600);
+            $store->set('session', 'privacy-expired', ['email' => 'subject@example.test'], $expiry);
+            $this->assertNull($store->get('session', 'privacy-expired'));
+            $this->assertSame(-2, $this->redis->ttl('session.privacy-expired'));
+            $this->assertSame(['email' => 'other@example.test'], $store->get('session', 'privacy-other'));
+        }
+        $store->delete('session', 'privacy-other');
+    }
+
     public function test_set_no_expire(): void {
         // Redis returns -1 for keys that have no TTL.
         $expectedttl = -1;
