@@ -73,6 +73,8 @@ $config = [
     'session.cookie.path'     => $CFG->sessioncookiepath,
     'session.cookie.domain'   => null,
     'session.cookie.secure'   => !empty($CFG->cookiesecure),
+    // SAML responses arrive by cross-site POST, including after the browser's new-cookie grace period.
+    'session.cookie.samesite' => !empty($CFG->cookiesecure) ? 'None' : null,
     'session.cookie.lifetime' => 0,
 
     'session.phpsession.cookiename' => null,
