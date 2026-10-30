@@ -131,8 +131,8 @@ class auth extends \auth_plugin_base {
         $this->defaults['flagmessage'] = get_string('flagmessage_default', 'auth_saml2');
         $this->authtype = 'saml2';
 
-        $baseurl = optional_param('baseurl', $CFG->wwwroot, PARAM_URL);
-        $mdl = new moodle_url($baseurl);
+        // The signing identity belongs to the configured site, never to an incoming request.
+        $mdl = new moodle_url($CFG->wwwroot);
         $this->spname = $mdl->get_host();
         $this->certpem = $this->get_file("{$this->spname}.pem");
         $this->certcrt = $this->get_file("{$this->spname}.crt");

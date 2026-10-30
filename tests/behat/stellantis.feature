@@ -7,6 +7,21 @@ Feature: Synthetic Stellantis-like HTTPS protocol compatibility
       | username     | auth  | firstname | lastname |
       | zz1234567890 | saml2 | Synthetic | Learner  |
 
+  Scenario Outline: A request baseurl cannot change metadata or the signed login destination
+    Given the isolated Stellantis profile uses "<binding>"
+    When I visit "/auth/saml2/sp/metadata.php?output=xhtml&baseurl=https%3A%2F%2Fforeign.example.test%2Fother"
+    Then I should see "https://sp.saml.test/auth/saml2/sp/metadata.php"
+    And I should not see "foreign.example.test"
+    When I visit "/auth/saml2/login.php?saml=on&baseurl=https%3A%2F%2Fforeign.example.test%2Fother"
+    Then I should see "Binding: <binding>"
+    When I press "Continue to Moodle"
+    Then I should see "Synthetic Learner"
+    And the Stellantis account remains unique without new grants
+    Examples:
+      | binding       |
+      | HTTP-Redirect |
+      | HTTP-POST     |
+
   Scenario Outline: Independent signatures survive a cross-site POST with secure cookies
     Given the isolated Stellantis profile uses "<binding>"
     And the Stellantis response variant is "<variant>"

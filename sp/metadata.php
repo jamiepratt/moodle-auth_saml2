@@ -40,16 +40,11 @@ if ($download) {
     header('Content-Disposition: attachment; filename=' . $saml2auth->spname . '.xml');
 }
 
-// Allow generating SP metadata for a different domain which can
-// be useful for setting up saml prior to a DNS cutover.
-// Needs to be public so an IdP can load it ahead of time.
-$baseurl = optional_param('baseurl', $CFG->wwwroot, PARAM_URL);
-
 // To keep it simple, every time you visit this page, it should rebuild the SP XML.
-$file = $saml2auth->get_file_sp_metadata_file($baseurl);
+$file = $saml2auth->get_file_sp_metadata_file();
 @unlink($file);
 
-$xml = auth_saml2_get_sp_metadata($baseurl);
+$xml = auth_saml2_get_sp_metadata();
 
 if ($output === 'xhtml') {
     header('Content-Type: text/html; charset=utf-8');

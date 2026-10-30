@@ -32,6 +32,96 @@ require_once(__DIR__ . '/../locallib.php');
 #[\PHPUnit\Framework\Attributes\CoversFunction('create_certificates')]
 final class locallib_test extends \advanced_testcase {
     /**
+     * Published metadata and login configuration use the administrator's site identity.
+     *
+     * @param string $method Request parameter source.
+     * @param string $wwwroot Configured Moodle URL, including a subdirectory.
+     * @param string $entityid Optional administrator-configured entity ID.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('site_identities')]
+    public function test_baseurl_cannot_change_metadata_or_login_configuration(
+        string $method,
+        string $wwwroot,
+        string $entityid
+    ): void {
+        global $CFG, $saml2auth, $saml2config;
+        require_once(__DIR__ . '/../setuplib.php');
+        $this->resetAfterTest();
+        $this->setUser(0);
+        $previousroot = $CFG->wwwroot;
+        $previousget = $_GET;
+        $previouspost = $_POST;
+        $previousauth = $saml2auth ?? null;
+        $previousconfig = $saml2config ?? null;
+        $untrustedurl = 'https://unregistered.example.test/other';
+
+        try {
+            \SimpleSAML\Configuration::clearInternalState();
+            $CFG->wwwroot = $wwwroot;
+            unset($_GET['baseurl'], $_POST['baseurl']);
+            if ($method === 'GET') {
+                $_GET['baseurl'] = $untrustedurl;
+            } else {
+                $_POST['baseurl'] = $untrustedurl;
+            }
+            $this->getDataGenerator()->get_plugin_generator('auth_saml2')->create_idp_entity([], false);
+            set_config('spentityid', $entityid, 'auth_saml2');
+            require(__DIR__ . '/../setup.php');
+            // phpcs:ignore moodle.Files.RequireLogin.Missing -- PHPUnit loads configuration, not a web entrypoint.
+            require(__DIR__ . '/../config/config.php');
+            self::assertSame($wwwroot . '/auth/saml2/sp/', $config['baseurlpath']);
+            self::assertSame($wwwroot . '/auth/saml2/sp/', $config['application']['baseURL']);
+
+            $expectedid = $entityid ?: $wwwroot . '/auth/saml2/sp/metadata.php';
+            $source = \SimpleSAML\Auth\Source::getById($saml2auth->spname);
+            self::assertSame($expectedid, $source->getEntityId());
+
+            // The legacy helper argument must not rewrite the shared metadata cache either.
+            $rawxml = auth_saml2_get_sp_metadata($untrustedurl);
+            $xml = new SimpleXMLElement($rawxml);
+            $xml->registerXPathNamespace('md', 'urn:oasis:names:tc:SAML:2.0:metadata');
+            self::assertSame($expectedid, (string)$xml['entityID']);
+            $acs = $xml->xpath('//md:AssertionConsumerService');
+            self::assertNotEmpty($acs);
+            foreach ($acs as $endpoint) {
+                self::assertSame(
+                    $wwwroot . '/auth/saml2/sp/saml2-acs.php/' . $saml2auth->spname,
+                    (string)$endpoint['Location']
+                );
+            }
+            $logout = $xml->xpath('//md:SingleLogoutService');
+            self::assertNotEmpty($logout);
+            foreach ($logout as $endpoint) {
+                self::assertSame(
+                    $wwwroot . '/auth/saml2/sp/saml2-logout.php/' . $saml2auth->spname,
+                    (string)$endpoint['Location']
+                );
+            }
+            self::assertStringNotContainsString($untrustedurl, $rawxml);
+            self::assertSame($rawxml, auth_saml2_get_sp_metadata());
+        } finally {
+            $CFG->wwwroot = $previousroot;
+            $_GET = $previousget;
+            $_POST = $previouspost;
+            $saml2auth = $previousauth;
+            $saml2config = $previousconfig;
+            \SimpleSAML\Configuration::clearInternalState();
+        }
+    }
+
+    /**
+     * Both request methods and default/custom entity IDs on subdirectory sites.
+     *
+     * @return array
+     */
+    public static function site_identities(): array {
+        return [
+            ['GET', 'https://site.example.test:8443/training', ''],
+            ['POST', 'http://site.example.test/training', 'urn:example:configured-sp'],
+        ];
+    }
+
+    /**
      * Regression test for Issue 132.
      */
     public function test_it_can_initialise_more_than_once(): void {

@@ -32,14 +32,15 @@ use auth_saml2\event\cert_regenerated;
  * easier when upgrading SSPHP.
  *
  *
- * @param string $baseurl
+ * @param string $baseurl Legacy argument, ignored. Metadata always describes the configured site.
  */
 function auth_saml2_get_sp_metadata($baseurl = '') {
     global $saml2auth, $CFG;
 
+    $baseurl = $CFG->wwwroot;
     $sourceId = $saml2auth->spname;
 
-    $file = $saml2auth->get_file_sp_metadata_file($baseurl);
+    $file = $saml2auth->get_file_sp_metadata_file();
     if (file_exists($file)) {
         $xml = file_get_contents($file);
         return $xml;

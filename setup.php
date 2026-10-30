@@ -59,11 +59,15 @@ if ($missingcertpem || $missingcertcrt) {
         debugging($errorstring);
     }
     try {
-        create_certificates($saml2auth);
+        $error = create_certificates($saml2auth);
+        if (empty($error)) {
+            cert_regenerated::create(['other' => ['reason' => $errorstring]])->trigger();
+        } else {
+            debugging($error, DEBUG_DEVELOPER);
+        }
     } catch (saml2_exception $exception) {
         debugging($exception->getMessage(), DEBUG_DEVELOPER, $exception->getTrace());
     }
-    cert_regenerated::create(['other' => ['reason' => $errorstring]])->trigger();
 }
 
 SimpleSAML\Configuration::setConfigDir("$CFG->dirroot/auth/saml2/config");
